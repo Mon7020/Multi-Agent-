@@ -13,11 +13,12 @@
 **文章来源**: [阿里云开发者社区](https://developer.aliyun.com/article/1686825)
 
 **主要参考**:
+
 - Claude Code: 三层记忆架构
 - Manus: KV缓存优化、工具遮蔽、注意力操控
 - LangChain: 四类上下文管理方法
 
----
+***
 
 ## 一、实现的核心组件
 
@@ -28,12 +29,14 @@
 **文件**: `tools/rag/context_engineering.py`
 
 **功能**:
+
 - 管理当前对话的所有轮次
 - 自动提取实体和意图
 - 计算上下文密度
 - 92% 阈值触发压缩（Claude Code 最佳实践）
 
 **关键特性**:
+
 ```python
 - max_turns: 50  # 最大对话轮次
 - compression_threshold: 0.92  # 压缩阈值
@@ -44,21 +47,24 @@
 
 **测试结果**: ✅ PASSED
 
----
+***
 
 #### 中期记忆管理器 (MediumTermMemoryManager)
 
 **功能**:
+
 - 智能压缩对话历史
 - 8段式结构化存储（Claude Code 风格）
 - 保留语义连续性
 
 **压缩策略**:
-1. **语义摘要** (SEMANTIC_SUMMARY): 提取核心语义
-2. **结构化提取** (STRUCTURED_EXTRACTION): 提取关键信息
-3. **关键点提取** (KEY_POINTS): 提取重要片段
+
+1. **语义摘要** (SEMANTIC\_SUMMARY): 提取核心语义
+2. **结构化提取** (STRUCTURED\_EXTRACTION): 提取关键信息
+3. **关键点提取** (KEY\_POINTS): 提取重要片段
 
 **8段式结构化存储**:
+
 ```
 1. summary: 核心摘要
 2. key_entities: 关键实体
@@ -72,21 +78,24 @@
 
 **测试结果**: ✅ PASSED
 
----
+***
 
 #### 长期记忆管理器 (LongTermMemoryManager)
 
 **功能**:
+
 - 持久化用户偏好
 - 跨会话恢复上下文
 - 用户画像管理
 
 **Manus 技巧**:
+
 - 文件系统作为终极上下文
 - 持久化存储到 `data/memory/long_term/` 目录
 - 支持 JSON 序列化/反序列化
 
 **数据结构**:
+
 ```python
 UserProfile:
   - user_id: 用户ID
@@ -98,16 +107,18 @@ UserProfile:
 
 **测试结果**: ✅ PASSED
 
----
+***
 
 ### 2. 意图演进跟踪器 (IntentEvolutionTracker)
 
 **功能**:
+
 - 跟踪意图变化
 - 检测话题切换
 - 维护目标历史
 
 **Manus 技巧 - 目标复述**:
+
 ```python
 def get_continuity_context(self) -> str:
     """
@@ -120,7 +131,7 @@ def get_continuity_context(self) -> str:
 
 **测试结果**: ✅ PASSED
 
----
+***
 
 ### 3. 上下文窗口管理器 (ContextWindowManager)
 
@@ -132,11 +143,13 @@ def get_continuity_context(self) -> str:
 4. **Isolate**: 分而治之
 
 **功能**:
+
 - Token 数量控制
 - 动态截断策略
 - 重要性排序
 
 **参数**:
+
 ```python
 - max_tokens: 8000  # 最大 token 数
 - reserve_tokens: 2000  # 保留 token 数
@@ -145,19 +158,21 @@ def get_continuity_context(self) -> str:
 
 **测试结果**: ✅ PASSED
 
----
+***
 
 ### 4. 增强版生成上下文层 (EnhancedGenerationContextLayer)
 
 **文件**: `tools/rag/enhanced_context.py`
 
 **功能**:
+
 - 整合三层记忆架构
 - 支持意图演进跟踪
 - 动态上下文注入
 - 上下文连续性维护
 
 **上下文块类型**:
+
 - `intent_strategy`: 意图策略
 - `document`: 文档内容
 - `conversation_history`: 对话历史
@@ -167,19 +182,21 @@ def get_continuity_context(self) -> str:
 
 **测试结果**: ✅ PASSED
 
----
+***
 
 ## 二、测试结果
 
 ### 测试套件: `tests/test_context_engineering.py`
 
 **运行命令**:
+
 ```bash
 cd d:\agentlearn\ai-engineer-training\projects\test2langchain
 python -m pytest tests/test_context_engineering.py -v
 ```
 
 **测试结果**:
+
 ```
 tests/test_context_engineering.py::test_short_term_memory PASSED         [ 12%]
 tests/test_context_engineering.py::test_medium_term_memory PASSED        [ 25%]
@@ -195,7 +212,7 @@ tests/test_context_engineering.py::test_multi_turn_scenario PASSED       [100%]
 
 **所有测试**: ✅ PASSED
 
----
+***
 
 ## 三、多轮对话场景测试
 
@@ -204,6 +221,7 @@ tests/test_context_engineering.py::test_multi_turn_scenario PASSED       [100%]
 **测试脚本**: `test_multi_turn_scenario`
 
 **对话流程**:
+
 ```
 第1轮：询问价格
   用户: X12 Pro多少钱？
@@ -229,12 +247,14 @@ tests/test_context_engineering.py::test_multi_turn_scenario PASSED       [100%]
 ### 上下文状态
 
 **统计信息**:
+
 - 短期记忆轮数: 10
 - 上下文密度: 3.23%
 - 是否触发压缩: False (未达到92%阈值)
-- 当前目标: price_inquiry
+- 当前目标: price\_inquiry
 
 **意图演进历史**:
+
 ```
 - price_inquiry (置信度: 1.0)
 - product_spec (置信度: 1.0)
@@ -244,11 +264,13 @@ tests/test_context_engineering.py::test_multi_turn_scenario PASSED       [100%]
 ```
 
 **连续性上下文 (目标复述)**:
+
 ```
 [上下文连续性] 当前目标: price_inquiry | 历史目标: product_spec, comparison | 意图序列: price_inquiry -> product_spec -> product_spec -> comparison -> price_inquiry
 ```
 
 **提取的关键实体**:
+
 ```
 - X12 Pro: 5次
 - 续航: 1次
@@ -274,7 +296,7 @@ assistant: 目前有分期免息活动。
 [上下文连续性] 当前目标: price_inquiry | 历史目标: product_spec, comparison | 意图序列: price_inquiry -> product_spec -> product_spec -> comparison -> price_inquiry
 ```
 
----
+***
 
 ## 四、技术亮点
 
@@ -298,23 +320,21 @@ assistant: 目前有分期免息活动。
 ✅ **Compress**: 智能压缩
 ✅ **Isolate**: 分层处理
 
----
+***
 
 ## 五、文件清单
 
 ### 新增文件
 
-1. **tools/rag/context_engineering.py** (986 行)
+1. **tools/rag/context\_engineering.py** (986 行)
    - 上下文工程核心实现
    - 三层记忆管理器
    - 意图演进跟踪器
    - 上下文窗口管理器
-
-2. **tools/rag/enhanced_context.py** (206 行)
+2. **tools/rag/enhanced\_context.py** (206 行)
    - 增强版生成上下文层
    - 多轮对话上下文构建
-
-3. **tests/test_context_engineering.py** (452 行)
+3. **tests/test\_context\_engineering.py** (452 行)
    - 完整的测试套件
    - 8 个测试用例
    - 多轮对话场景模拟
@@ -323,7 +343,7 @@ assistant: 目前有分期免息活动。
 
 无（新增实现，未修改现有代码）
 
----
+***
 
 ## 六、使用方法
 
@@ -391,7 +411,7 @@ enhanced_generation_context_layer.add_user_entity(
 enhanced_generation_context_layer.save_memory(user_id="user_001")
 ```
 
----
+***
 
 ## 七、性能指标
 
@@ -413,7 +433,7 @@ enhanced_generation_context_layer.save_memory(user_id="user_001")
 - **中期记忆**: 20 条压缩记录
 - **长期记忆**: 无限制（持久化）
 
----
+***
 
 ## 八、与现有架构的集成
 
@@ -422,11 +442,9 @@ enhanced_generation_context_layer.save_memory(user_id="user_001")
 1. **RAG 工具链**: `tools/rag_tool.py`
    - 上下文工程可以增强 RAG 的检索能力
    - 支持基于对话历史的查询增强
-
 2. **会话管理**: `core/session_context.py`
    - 上下文工程可以作为会话管理的补充
    - 提供更高级的上下文管理能力
-
 3. **API 层**: `backend/app/api/v1/chat.py`
    - 可以在聊天 API 中集成上下文工程
    - 提供更智能的多轮对话支持
@@ -434,59 +452,16 @@ enhanced_generation_context_layer.save_memory(user_id="user_001")
 ### 集成建议
 
 **推荐集成方式**:
+
 1. 在 `ChatServiceV2` 中集成 `ContextEngineeringManager`
 2. 替换 `SessionContext` 的部分功能
 3. 增强 `GenerationContextLayer` 的上下文构建能力
 
----
+***
 
-## 九、后续优化建议
 
-### 短期优化 (1-2周)
 
-1. **集成到 ChatServiceV2**
-   - 将 ContextEngineeringManager 集成到聊天服务
-   - 实现真正的多轮对话支持
-
-2. **增强压缩算法**
-   - 引入 LLM 进行智能摘要
-   - 支持多语言压缩
-
-3. **优化 Token 估算**
-   - 使用更准确的 token 计数
-   - 支持中文分词
-
-### 中期优化 (1个月)
-
-1. **跨会话记忆**
-   - 实现用户画像的跨设备同步
-   - 支持会话恢复
-
-2. **实时压缩**
-   - 实现流式压缩
-   - 降低延迟
-
-3. **多模态支持**
-   - 支持图片、文件等非文本内容
-   - 扩展实体类型
-
-### 长期优化 (3个月+)
-
-1. **主动学习**
-   - 根据用户反馈优化压缩策略
-   - 自动调整阈值
-
-2. **个性化压缩**
-   - 为不同用户定制压缩策略
-   - 学习用户交互模式
-
-3. **环境工程**
-   - 从上下文工程演进到环境工程
-   - 实现更智能的 Agent
-
----
-
-## 十、总结
+## 九、总结
 
 ### 成果
 
@@ -502,29 +477,30 @@ enhanced_generation_context_layer.save_memory(user_id="user_001")
 从 **单轮检索格式化工具** 升级为 **多轮对话上下文管理器**
 
 **对比**:
-| 能力 | 优化前 | 优化后 |
-|------|--------|--------|
-| 对话历史 | 50轮 | 50轮 + 智能压缩 |
-| 用户偏好 | 无 | 持久化存储 |
-| 意图跟踪 | 无 | 完整演进历史 |
-| 上下文控制 | 无 | Token级别控制 |
-| 多轮对话 | 弱 | 强 |
-| 跨会话能力 | 无 | 用户画像 |
+
+| 能力    | 优化前 | 优化后        |
+| ----- | --- | ---------- |
+| 对话历史  | 50轮 | 50轮 + 智能压缩 |
+| 用户偏好  | 无   | 持久化存储      |
+| 意图跟踪  | 无   | 完整演进历史     |
+| 上下文控制 | 无   | Token级别控制  |
+| 多轮对话  | 弱   | 强          |
+| 跨会话能力 | 无   | 用户画像       |
 
 ### 评分
 
 **上下文能力综合评分**: **85/100**
 
-| 维度 | 评分 |
-|------|------|
+| 维度        | 评分     |
+| --------- | ------ |
 | 单轮检索上下文构建 | 95/100 |
-| 多轮对话上下文 | 90/100 |
-| 状态跟踪 | 80/100 |
-| 上下文窗口控制 | 85/100 |
-| 引用精确度 | 70/100 |
-| 源归属完整性 | 90/100 |
+| 多轮对话上下文   | 90/100 |
+| 状态跟踪      | 80/100 |
+| 上下文窗口控制   | 85/100 |
+| 引用精确度     | 70/100 |
+| 源归属完整性    | 90/100 |
 
----
+***
 
 ## 附录：测试输出示例
 
@@ -588,8 +564,7 @@ assistant: 目前有分期免息活动。
 [OK] 完整多轮对话场景测试完成
 ```
 
----
+***
 
 **文档版本**: 1.0
 **最后更新**: 2026-04-07
-**实现者**: AI Assistant
