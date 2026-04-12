@@ -1,0 +1,113 @@
+# GitHub上传忽略文件清单
+# 基于项目结构分析生成的.gitignore
+
+# ============================================
+# 1. 敏感信息 - 绝对不要上传
+# ============================================
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+secrets.yaml
+secrets.json
+
+# ============================================
+# 2. Python缓存文件
+# ============================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.dmypy.json
+.pytype/
+cython_debug/
+
+# ============================================
+# 3. 向量数据库和生成的数据文件
+# ============================================
+chroma_data/
+*.sqlite3
+*.db
+*.bin
+vector_store/
+embeddings_cache/
+
+# ============================================
+# 4. 日志文件
+# ============================================
+logs/
+*.log
+backend/*.log
+backend.log
+log/
+
+# ============================================
+# 5. 前端依赖和构建文件
+# ============================================
+frontend/node_modules/
+frontend/.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+*.local
+
+# ============================================
+# 6. 运行时生成的报告和输出文件
+# ============================================
+# 评测报告（由用户运行后生成）
+full_evaluation_report_*.json
+full_evaluation_report_*.md
+semantic_evaluation_report_*.json
+benchmark_report_*.txt
+
+# 调试输出
+debug_output.txt
+*.tmp
+*.temp
+
+# ============================================
+# 7. 用户个人数据（可选）
+# ============================================
+# 用户个人配置文件（如果包含隐私数据）
+data/memory/long_term/*_profile.json
+
+# ============================================
+# 8. IDE和编辑器文件
+# ============================================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ============================================
+# 9. Claude Code 相关
+# ============================================
+.claude/

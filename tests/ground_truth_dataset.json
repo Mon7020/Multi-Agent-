@@ -1,0 +1,175 @@
+{
+  "dataset_name": "RAG检索质量评估 Ground Truth 数据集",
+  "version": "1.0",
+  "created_date": "2024-04-06",
+  "total_queries": 15,
+  "description": "基于知识库的专家标注数据，用于评估 RAG 系统的召回率和准确率",
+  "queries": [
+    {
+      "id": "q001",
+      "query": "X12 Pro手机多少钱",
+      "intent": "sales_price",
+      "relevant_doc_ids": [
+        "电子商品价格表.txt-001",
+        "常见问题_FAQ.txt",
+        "产品手册_v1.0.pdf"
+      ],
+      "relevant_reason": "序号001是X12 Pro的精确价格信息",
+      "min_relevant_count": 1
+    },
+    {
+      "id": "q002",
+      "query": "X12 和 X12 Pro 有什么区别",
+      "intent": "sales_comparison",
+      "relevant_doc_ids": [
+        "电子商品价格表.txt-001",
+        "电子商品价格表.txt-002"
+      ],
+      "relevant_reason": "需要对比X12和X12 Pro的配置差异",
+      "min_relevant_count": 2
+    },
+    {
+      "id": "q003",
+      "query": "手机进水了怎么办",
+      "intent": "tech_support",
+      "relevant_doc_ids": [
+        "用户指南_2024.docx",
+        "常见问题_FAQ.txt"
+      ],
+      "relevant_reason": "用户指南包含手机进水处理方法",
+      "min_relevant_count": 1
+    },
+    {
+      "id": "q004",
+      "query": "能不能便宜一点",
+      "intent": "negotiation",
+      "relevant_doc_ids": [
+        "电子商品价格表.txt",
+        "常见问题_FAQ.txt"
+      ],
+      "relevant_reason": "价格表包含最大优惠价，FAQ可能有折扣政策",
+      "min_relevant_count": 1
+    },
+    {
+      "id": "q005",
+      "query": "AirPad 平板电脑的价格",
+      "intent": "sales_price",
+      "relevant_doc_ids": [
+        "电子商品价格表.txt-003"
+      ],
+      "relevant_reason": "序号003是AirPad 2024的精确价格",
+      "min_relevant_count": 1
+    },
+    {
+      "id": "q006",
+      "query": "怎么退货",
+      "intent": "tech_support",
+      "relevant_doc_ids": [
+        "用户指南_2024.docx",
+        "常见问题_FAQ.txt"
+      ],
+      "relevant_reason": "用户指南包含退货政策",
+      "min_relevant_count": 1
+    },
+    {
+      "id": "q007",
+      "query": "蓝牙耳机推荐",
+      "intent": "sales_recommendation",
+      "relevant_doc_ids": [
+        "电子商品价格表.txt-008",
+        "电子商品价格表.txt-009",
+        "电子商品价格表.txt-010"
+      ],
+      "relevant_reason": "这三款是蓝牙耳机产品",
+      "min_relevant_count": 1
+    },
+    {
+      "id": "q008",
+      "query": "智能手表哪个好",
+      "intent": "sales_comparison",
+      "relevant_doc_ids": [
+        "电子商品价格表.txt-011",
+        "电子商品价格表.txt-012",
+        "电子商品价格表.txt-045"
+      ],
+      "relevant_reason": "这三款是智能手表产品",
+      "min_relevant_count": 1
+    },
+    {
+      "id": "q009",
+      "query": "游戏笔记本推荐",
+      "intent": "sales_recommendation",
+      "relevant_doc_ids": [
+        "电子商品价格表.txt-007",
+        "电竞显示器_ROG Swift 27.txt"
+      ],
+      "relevant_reason": "拯救者R9000P和ROG显示器是游戏设备",
+      "min_relevant_count": 1
+    },
+    {
+      "id": "q010",
+      "query": "路由器推荐",
+      "intent": "sales_recommendation",
+      "relevant_doc_ids": [
+        "电子商品价格表.txt-034",
+        "电子商品价格表.txt-035"
+      ],
+      "relevant_reason": "这两款是无线路由器",
+      "min_relevant_count": 1
+    },
+    {
+      "id": "q011",
+      "query": "怎么联系客服",
+      "intent": "tech_support",
+      "relevant_doc_ids": [
+        "用户指南_2024.docx",
+        "常见问题_FAQ.txt"
+      ],
+      "relevant_reason": "用户指南包含客服联系方式",
+      "min_relevant_count": 1
+    },
+    {
+      "id": "q012",
+      "query": "分期付款怎么算",
+      "intent": "sales_payment",
+      "relevant_doc_ids": [
+        "用户指南_2024.docx",
+        "常见问题_FAQ.txt"
+      ],
+      "relevant_reason": "支付说明章节包含分期信息",
+      "min_relevant_count": 1
+    },
+    {
+      "id": "q013",
+      "query": "保修期多久",
+      "intent": "tech_support",
+      "relevant_doc_ids": [
+        "用户指南_2024.docx",
+        "常见问题_FAQ.txt"
+      ],
+      "relevant_reason": "保修政策在用户指南和FAQ中",
+      "min_relevant_count": 1
+    },
+    {
+      "id": "q014",
+      "query": "降噪耳机推荐",
+      "intent": "sales_recommendation",
+      "relevant_doc_ids": [
+        "电子商品价格表.txt-029"
+      ],
+      "relevant_reason": "WH-1000XM5是顶级降噪耳机",
+      "min_relevant_count": 1
+    },
+    {
+      "id": "q015",
+      "query": "x12",
+      "intent": "product_search",
+      "relevant_doc_ids": [
+        "电子商品价格表.txt-001",
+        "电子商品价格表.txt-002"
+      ],
+      "relevant_reason": "X12和X12 Pro都包含x12关键词（大小写不敏感）",
+      "min_relevant_count": 1
+    }
+  ]
+}

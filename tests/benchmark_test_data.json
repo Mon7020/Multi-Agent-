@@ -1,0 +1,227 @@
+{
+  "test_suite_name": "RAG检索质量基准测试集",
+  "version": "1.0",
+  "description": "用于评估 RAG 系统检索质量的测试数据集，包含查询、预期文档和评估指标",
+  "created_date": "2024-01-15",
+  "total_queries": 20,
+  "queries": [
+    {
+      "id": "q001",
+      "query": "X12 Pro手机多少钱",
+      "intent": "sales_price",
+      "expected_doc_ids": ["doc001", "doc002", "doc003"],
+      "expected_keywords": ["X12 Pro", "智能手机", "价格", "3999"],
+      "min_relevant_docs": 2,
+      "category": "产品咨询"
+    },
+    {
+      "id": "q002",
+      "query": "这款手机有什么优惠",
+      "intent": "sales_discount",
+      "expected_doc_ids": ["doc002", "doc004", "doc005"],
+      "expected_keywords": ["优惠", "折扣", "活动", "赠品"],
+      "min_relevant_docs": 1,
+      "category": "促销活动"
+    },
+    {
+      "id": "q003",
+      "query": "手机进水了怎么办",
+      "intent": "tech_support",
+      "expected_doc_ids": ["doc006", "doc007", "doc008"],
+      "expected_keywords": ["进水", "维修", "损坏", "保护"],
+      "min_relevant_docs": 2,
+      "category": "技术支持"
+    },
+    {
+      "id": "q004",
+      "query": "能不能便宜一点",
+      "intent": "negotiation",
+      "expected_doc_ids": ["doc009", "doc010"],
+      "expected_keywords": ["折扣", "优惠", "价格", "谈判"],
+      "min_relevant_docs": 1,
+      "category": "价格谈判"
+    },
+    {
+      "id": "q005",
+      "query": "X12 Pro 和 X12 有什么区别",
+      "intent": "sales_comparison",
+      "expected_doc_ids": ["doc001", "doc002", "doc003", "doc011"],
+      "expected_keywords": ["X12", "对比", "区别", "配置", "参数"],
+      "min_relevant_docs": 2,
+      "category": "产品对比"
+    },
+    {
+      "id": "q006",
+      "query": "怎么退货",
+      "intent": "tech_support",
+      "expected_doc_ids": ["doc012", "doc013"],
+      "expected_keywords": ["退货", "退款", "售后", "政策"],
+      "min_relevant_docs": 1,
+      "category": "售后服务"
+    },
+    {
+      "id": "q007",
+      "query": "手机卡顿怎么解决",
+      "intent": "tech_support",
+      "expected_doc_ids": ["doc014", "doc015", "doc016"],
+      "expected_keywords": ["卡顿", "优化", "清理", "内存"],
+      "min_relevant_docs": 2,
+      "category": "技术问题"
+    },
+    {
+      "id": "q008",
+      "query": "有学生优惠吗",
+      "intent": "sales_discount",
+      "expected_doc_ids": ["doc004", "doc005", "doc017"],
+      "expected_keywords": ["学生", "优惠", "折扣", "认证"],
+      "min_relevant_docs": 1,
+      "category": "促销活动"
+    },
+    {
+      "id": "q009",
+      "query": "电池不耐用怎么办",
+      "intent": "tech_support",
+      "expected_doc_ids": ["doc018", "doc019", "doc020"],
+      "expected_keywords": ["电池", "续航", "充电", "省电"],
+      "min_relevant_docs": 2,
+      "category": "技术问题"
+    },
+    {
+      "id": "q010",
+      "query": "分期付款怎么算",
+      "intent": "sales_payment",
+      "expected_doc_ids": ["doc021", "doc022"],
+      "expected_keywords": ["分期", "付款", "利息", "月供"],
+      "min_relevant_docs": 1,
+      "category": "支付方式"
+    },
+    {
+      "id": "q011",
+      "query": "屏幕碎了换屏多少钱",
+      "intent": "tech_support",
+      "expected_doc_ids": ["doc023", "doc024"],
+      "expected_keywords": ["屏幕", "碎屏", "维修", "费用"],
+      "min_relevant_docs": 1,
+      "category": "维修费用"
+    },
+    {
+      "id": "q012",
+      "query": "支持无线充电吗",
+      "intent": "sales_feature",
+      "expected_doc_ids": ["doc025", "doc026"],
+      "expected_keywords": ["无线充电", "功能", "支持", "配件"],
+      "min_relevant_docs": 1,
+      "category": "产品功能"
+    },
+    {
+      "id": "q013",
+      "query": "摄像头像素多少",
+      "intent": "sales_spec",
+      "expected_doc_ids": ["doc027", "doc028"],
+      "expected_keywords": ["摄像头", "像素", "拍照", "规格"],
+      "min_relevant_docs": 1,
+      "category": "产品参数"
+    },
+    {
+      "id": "q014",
+      "query": "内存不够用",
+      "intent": "tech_support",
+      "expected_doc_ids": ["doc029", "doc030"],
+      "expected_keywords": ["内存", "存储", "清理", "扩展"],
+      "min_relevant_docs": 1,
+      "category": "技术问题"
+    },
+    {
+      "id": "q015",
+      "query": "有哪些颜色可选",
+      "intent": "sales_option",
+      "expected_doc_ids": ["doc031", "doc032"],
+      "expected_keywords": ["颜色", "外观", "款式", "可选"],
+      "min_relevant_docs": 1,
+      "category": "产品咨询"
+    },
+    {
+      "id": "q016",
+      "query": "系统怎么升级",
+      "intent": "tech_support",
+      "expected_doc_ids": ["doc033", "doc034"],
+      "expected_keywords": ["系统", "升级", "更新", "版本"],
+      "min_relevant_docs": 1,
+      "category": "技术支持"
+    },
+    {
+      "id": "q017",
+      "query": "能以旧换新吗",
+      "intent": "sales_tradein",
+      "expected_doc_ids": ["doc035", "doc036"],
+      "expected_keywords": ["以旧换新", "回收", "补贴", "旧手机"],
+      "min_relevant_docs": 1,
+      "category": "促销活动"
+    },
+    {
+      "id": "q018",
+      "query": "NFC功能怎么用",
+      "intent": "tech_support",
+      "expected_doc_ids": ["doc037", "doc038"],
+      "expected_keywords": ["NFC", "功能", "使用", "设置"],
+      "min_relevant_docs": 1,
+      "category": "功能使用"
+    },
+    {
+      "id": "q019",
+      "query": "保修期多久",
+      "intent": "tech_support",
+      "expected_doc_ids": ["doc039", "doc040"],
+      "expected_keywords": ["保修", "质保", "期限", "售后"],
+      "min_relevant_docs": 1,
+      "category": "售后服务"
+    },
+    {
+      "id": "q020",
+      "query": "购买有礼盒吗",
+      "intent": "sales_gift",
+      "expected_doc_ids": ["doc041", "doc042"],
+      "expected_keywords": ["礼盒", "赠品", "套装", "配件"],
+      "min_relevant_docs": 1,
+      "category": "促销活动"
+    }
+  ],
+  "edge_cases": [
+    {
+      "id": "edge001",
+      "query": "x12",
+      "description": "小写查询测试",
+      "expected_doc_ids": ["doc001", "doc002", "doc003"],
+      "case_sensitive": false
+    },
+    {
+      "id": "edge002",
+      "query": "X12",
+      "description": "大写查询测试",
+      "expected_doc_ids": ["doc001", "doc002", "doc003"],
+      "case_sensitive": false
+    },
+    {
+      "id": "edge003",
+      "query": "你们的产品",
+      "description": "模糊查询测试",
+      "expected_doc_ids": [],
+      "case_sensitive": false
+    },
+    {
+      "id": "edge004",
+      "query": "手机",
+      "description": "单关键词查询",
+      "expected_doc_ids": ["doc001", "doc002", "doc003"],
+      "case_sensitive": false
+    }
+  ],
+  "performance_targets": {
+    "recall_at_3": 0.85,
+    "precision_at_3": 0.75,
+    "avg_latency_ms": 200,
+    "p95_latency_ms": 500,
+    "cache_hit_rate": 0.60,
+    "success_rate": 0.95
+  }
+}
