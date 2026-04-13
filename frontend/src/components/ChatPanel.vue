@@ -1,180 +1,172 @@
-<template>
+﻿<template>
   <div class="chat-panel">
-    <div class="chat-main">
-      <div class="messages-container" ref="messagesContainer">
-        <div v-if="messages.length === 0" class="welcome">
-          <div class="welcome-icon">
-            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-            </svg>
-          </div>
-          <h3>开始对话</h3>
-          <p>输入您的问题，智能客服将基于知识库为您提供答案</p>
+    <div class="messages-container" ref="messagesContainer">
+      <div
+        v-for="(msg, index) in messages"
+        :key="index"
+        :class="['message', msg.role]"
+      >
+        <div class="message-bubble" v-html="formatMessage(msg.content)"></div>
+        <div class="message-meta">
+          <span class="time">{{ formatTime(msg.timestamp) }}</span>
+          <span v-if="msg.role === 'assistant' && msg.customerType" class="tag">
+            {{ msg.customerType }}
+          </span>
         </div>
+      </div>
 
-        <div
-          v-for="(msg, index) in messages"
-          :key="index"
-          :class="['message', msg.role]"
+      <div v-if="loading" class="message assistant">
+        <div class="message-bubble typing">
+          <span class="dot"></span>
+          <span class="dot"></span>
+          <span class="dot"></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="input-area">
+      <div class="input-wrapper">
+        <textarea
+          v-model="inputMessage"
+          @keydown.enter.exact.prevent="sendMessage"
+          :disabled="loading"
+          rows="1"
+          ref="inputTextarea"
+          placeholder="输入消息，Enter 发送..."
+        ></textarea>
+        <button
+          class="send-btn"
+          @click="sendMessage"
+          :disabled="loading || !inputMessage.trim()"
         >
-          <div class="message-avatar">
-            <svg v-if="msg.role === 'user'" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
-              <circle cx="12" cy="7" r="4"/>
-            </svg>
-            <svg v-else width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M12 2a10 10 0 1 0 10 10H12V2z"/>
-              <path d="M12 2a7 7 0 0 1 7 7"/>
-              <circle cx="12" cy="12" r="3"/>
-            </svg>
-          </div>
-          <div class="message-content">
-            <div class="message-bubble" v-html="formatMessage(msg.content)"></div>
-            <div class="message-meta">
-              <span class="message-time">{{ formatTime(msg.timestamp) }}</span>
-              <span v-if="msg.role === 'assistant' && msg.customerType" class="message-tag">
-                {{ msg.customerType }}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <div v-if="loading" class="message assistant">
-          <div class="message-avatar">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M12 2a10 10 0 1 0 10 10H12V2z"/>
-              <path d="M12 2a7 7 0 0 1 7 7"/>
-              <circle cx="12" cy="12" r="3"/>
-            </svg>
-          </div>
-          <div class="message-content">
-            <div class="message-bubble typing">
-              <span class="typing-dot"></span>
-              <span class="typing-dot"></span>
-              <span class="typing-dot"></span>
-            </div>
-          </div>
-        </div>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="22" y1="2" x2="11" y2="13"/>
+            <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+          </svg>
+        </button>
       </div>
-
-      <div class="input-area">
-        <div class="input-wrapper">
-          <textarea
-            v-model="inputMessage"
-            @keydown.enter.exact.prevent="sendMessage"
-            placeholder="输入消息..."
-            :disabled="loading"
-            rows="1"
-            ref="inputTextarea"
-          ></textarea>
-          <button
-            @click="sendMessage"
-            :disabled="loading || !inputMessage.trim()"
-            class="send-button"
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <line x1="22" y1="2" x2="11" y2="13"/>
-              <polygon points="22 2 15 22 11 13 2 9 22 2"/>
-            </svg>
-          </button>
-        </div>
-        <div class="input-footer">
-          <span>按 Enter 发送</span>
-          <button @click="clearHistory" class="clear-btn">清空对话</button>
-        </div>
-      </div>
+      <button class="clear-btn" @click="clearHistory" :disabled="loading">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polyline points="3 6 5 6 21 6"/>
+          <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+        </svg>
+        清空会话
+      </button>
     </div>
   </div>
 </template>
 
 <script setup>
-import { ref, nextTick, onMounted } from 'vue'
+import { nextTick, onMounted, ref } from 'vue'
 import { chatApi } from '../api/index.js'
 
 const messages = ref([])
 const inputMessage = ref('')
 const loading = ref(false)
-const sessionId = ref('session_' + Date.now())
+const userId = ref(getOrCreateUserId())
+const sessionId = ref(`session_${userId.value}_${Date.now()}`)
 const messagesContainer = ref(null)
 const inputTextarea = ref(null)
 
-// 默认招呼消息（页面加载时直接显示）
-const defaultGreeting = '您好呀！我是您的智能客服助手，可以帮您查产品、问价格、了解优惠、查物流，还可以解答使用问题哦～有什么想问的尽管说！'
+const defaultGreeting = '您好，我是智能客服助手。请告诉我您要咨询的问题。'
 
 onMounted(() => {
-  // 页面加载时，自动显示招呼消息
   messages.value.push({
     role: 'assistant',
     content: defaultGreeting,
     timestamp: new Date().toISOString()
   })
 
-  // 聚焦输入框
   if (inputTextarea.value) {
     inputTextarea.value.focus()
   }
 })
 
+function getOrCreateUserId() {
+  const storageKey = 'chat_user_id'
+  const cached = localStorage.getItem(storageKey)
+  if (cached) return cached
+
+  const generated = `user_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+  localStorage.setItem(storageKey, generated)
+  return generated
+}
+
 async function sendMessage() {
-  if (!inputMessage.value.trim() || loading.value) return
+  const trimmed = inputMessage.value.trim()
+  if (!trimmed || loading.value) return
 
   const userMessage = {
     role: 'user',
-    content: inputMessage.value,
+    content: trimmed,
     timestamp: new Date().toISOString()
   }
 
   messages.value.push(userMessage)
-  const currentMessage = inputMessage.value
   inputMessage.value = ''
   loading.value = true
+
+  const history = messages.value.slice(0, -1).map(m => ({
+    role: m.role,
+    content: m.content
+  }))
+
+  const assistantMessage = {
+    role: 'assistant',
+    content: '',
+    timestamp: new Date().toISOString(),
+    customerType: null
+  }
+  messages.value.push(assistantMessage)
 
   await nextTick()
   scrollToBottom()
 
-  try {
-    const history = messages.value.slice(0, -1).map(m => ({
-      role: m.role,
-      content: m.content
-    }))
+  let greetingInserted = false
 
-    const response = await chatApi.sendMessage(
-      sessionId.value,
-      currentMessage,
-      history
+  try {
+    await streamAssistantReply(
+      {
+        sessionId: sessionId.value,
+        userId: userId.value,
+        message: trimmed,
+        history
+      },
+      assistantMessage,
+      (meta) => {
+        if (meta.customer_type) {
+          assistantMessage.customerType = meta.customer_type
+        }
+
+        if (meta.greeting && !greetingInserted) {
+          messages.value.splice(messages.value.length - 1, 0, {
+            role: 'assistant',
+            content: meta.greeting,
+            timestamp: new Date().toISOString(),
+            customerType: meta.customer_type || null
+          })
+          greetingInserted = true
+        }
+      }
     )
 
-    const assistantMessage = {
-      role: 'assistant',
-      content: response.data.message,
-      timestamp: new Date().toISOString(),
-      customerType: response.data.customer_type
-    }
+    if (!assistantMessage.content.trim()) {
+      const response = await chatApi.sendMessage(sessionId.value, userId.value, trimmed, history)
+      assistantMessage.content = response.data.message || ''
+      assistantMessage.customerType = response.data.customer_type || null
 
-    // 如果有新会话招呼消息，先显示招呼，再显示回复
-    if (response.data.greeting) {
-      const greetingMessage = {
-        role: 'assistant',
-        content: response.data.greeting,
-        timestamp: new Date().toISOString(),
-        customerType: response.data.customer_type
+      if (response.data.greeting && !greetingInserted) {
+        messages.value.splice(messages.value.length - 1, 0, {
+          role: 'assistant',
+          content: response.data.greeting,
+          timestamp: new Date().toISOString(),
+          customerType: response.data.customer_type || null
+        })
       }
-      messages.value.push(greetingMessage)
     }
-
-    messages.value.push(assistantMessage)
-
-    if (response.data.sources && response.data.sources.length > 0) {
-      console.log('Sources:', response.data.sources)
-    }
-
   } catch (error) {
-    console.error('发送消息失败:', error)
-    messages.value.push({
-      role: 'assistant',
-      content: '抱歉，发生了错误：' + (error.response?.data?.detail || error.message),
-      timestamp: new Date().toISOString()
-    })
+    console.error('send message failed:', error)
+    assistantMessage.content = `抱歉，发送失败：${error.message || 'unknown error'}`
   }
 
   loading.value = false
@@ -182,9 +174,84 @@ async function sendMessage() {
   scrollToBottom()
 }
 
+async function streamAssistantReply(payload, assistantMessage, onMeta) {
+  const response = await chatApi.streamMessage(
+    payload.sessionId,
+    payload.userId,
+    payload.message,
+    payload.history
+  )
+
+  if (!response.ok) {
+    throw new Error(`stream request failed: ${response.status}`)
+  }
+
+  if (!response.body) {
+    throw new Error('stream body is unavailable')
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder('utf-8')
+  let buffer = ''
+
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+
+    buffer += decoder.decode(value, { stream: true })
+
+    let splitIndex = buffer.indexOf('\n\n')
+    while (splitIndex !== -1) {
+      const frame = buffer.slice(0, splitIndex).trim()
+      buffer = buffer.slice(splitIndex + 2)
+
+      if (frame) {
+        const lines = frame.split('\n')
+        for (const line of lines) {
+          if (!line.startsWith('data:')) continue
+          const data = line.slice(5).trim()
+          if (!data) continue
+
+          const chunk = JSON.parse(data)
+          if (chunk.error) {
+            throw new Error(chunk.error)
+          }
+
+          if (typeof chunk.content === 'string' && chunk.content.length > 0) {
+            assistantMessage.content += chunk.content
+            await nextTick()
+            scrollToBottom()
+          }
+
+          if (chunk.meta) {
+            onMeta(chunk.meta)
+          }
+
+          if (chunk.done) {
+            return
+          }
+        }
+      }
+
+      splitIndex = buffer.indexOf('\n\n')
+    }
+  }
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
 function formatMessage(content) {
   if (!content) return ''
-  return content
+
+  const safe = escapeHtml(content)
+  return safe
     .replace(/`([^`]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
     .replace(/\n/g, '<br>')
@@ -203,114 +270,55 @@ function scrollToBottom() {
 }
 
 async function clearHistory() {
-  if (!confirm('确定要清空所有对话历史吗？')) return
+  if (!confirm('确定要清空当前会话历史吗？')) return
 
   try {
-    await chatApi.clearHistory(sessionId.value)
-    messages.value = []
+    await chatApi.clearHistory(sessionId.value, userId.value)
+    messages.value = [{
+      role: 'assistant',
+      content: defaultGreeting,
+      timestamp: new Date().toISOString()
+    }]
   } catch (error) {
-    console.error('清空历史失败:', error)
+    console.error('clear history failed:', error)
   }
 }
 </script>
 
 <style scoped>
 .chat-panel {
-  height: 100%;
-  display: flex;
-  justify-content: center;
-}
-
-.chat-main {
-  width: 100%;
-  max-width: 800px;
-  height: 100%;
+  height: calc(100vh - 56px - 48px);
   display: flex;
   flex-direction: column;
-  background: var(--surface);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow);
-  overflow: hidden;
+  gap: 16px;
 }
 
 .messages-container {
   flex: 1;
   overflow-y: auto;
   padding: 24px;
-}
-
-.welcome {
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  border: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  text-align: center;
-  color: var(--text-secondary);
-}
-
-.welcome-icon {
-  width: 80px;
-  height: 80px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--border-light);
-  border-radius: 50%;
-  margin-bottom: 20px;
-  color: var(--text-muted);
-}
-
-.welcome h3 {
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--text-primary);
-  margin-bottom: 8px;
-}
-
-.welcome p {
-  font-size: 14px;
-  max-width: 300px;
+  gap: 16px;
 }
 
 .message {
   display: flex;
-  gap: 12px;
-  margin-bottom: 20px;
-  animation: fadeIn 0.2s ease;
-}
-
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
+  flex-direction: column;
+  max-width: 75%;
 }
 
 .message.user {
-  flex-direction: row-reverse;
+  align-self: flex-end;
+  align-items: flex-end;
 }
 
-.message-avatar {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.message.assistant .message-avatar {
-  background: var(--accent-light);
-  color: var(--accent);
-}
-
-.message.user .message-avatar {
-  background: var(--text-primary);
-  color: white;
-}
-
-.message-content {
-  max-width: 75%;
+.message.assistant {
+  align-self: flex-start;
+  align-items: flex-start;
 }
 
 .message-bubble {
@@ -318,21 +326,23 @@ async function clearHistory() {
   border-radius: 16px;
   line-height: 1.6;
   font-size: 14px;
-}
-
-.message.assistant .message-bubble {
-  background: var(--border-light);
-  color: var(--text-primary);
-  border-bottom-left-radius: 4px;
+  word-break: break-word;
 }
 
 .message.user .message-bubble {
   background: var(--accent);
-  color: white;
+  color: #fff;
   border-bottom-right-radius: 4px;
 }
 
-.message-bubble code {
+.message.assistant .message-bubble {
+  background: #F8F9FB;
+  border: 1px solid #E8EAED;
+  color: var(--text-primary);
+  border-bottom-left-radius: 4px;
+}
+
+.message.assistant .message-bubble code {
   background: rgba(0, 0, 0, 0.06);
   padding: 2px 6px;
   border-radius: 4px;
@@ -340,12 +350,31 @@ async function clearHistory() {
   font-size: 13px;
 }
 
-.message.user .message-bubble code {
-  background: rgba(255, 255, 255, 0.2);
+.message.assistant .message-bubble strong {
+  font-weight: 600;
 }
 
-.message-bubble strong {
-  font-weight: 600;
+.message.typing {
+  display: flex;
+  gap: 4px;
+  padding: 14px 18px;
+}
+
+.message.typing .dot {
+  width: 8px;
+  height: 8px;
+  background: var(--text-muted);
+  border-radius: 50%;
+  animation: bounce 1.4s infinite ease-in-out;
+}
+
+.message.typing .dot:nth-child(1) { animation-delay: 0s; }
+.message.typing .dot:nth-child(2) { animation-delay: 0.2s; }
+.message.typing .dot:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes bounce {
+  0%, 80%, 100% { transform: translateY(0); }
+  40% { transform: translateY(-6px); }
 }
 
 .message-meta {
@@ -353,123 +382,118 @@ async function clearHistory() {
   align-items: center;
   gap: 8px;
   margin-top: 6px;
-  padding: 0 4px;
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 .message.user .message-meta {
   flex-direction: row-reverse;
 }
 
-.message-time {
-  font-size: 12px;
-  color: var(--text-muted);
-}
-
-.message-tag {
-  font-size: 11px;
+.message-meta .tag {
+  background: var(--accent-light);
+  color: var(--accent);
   padding: 2px 8px;
-  background: var(--border-light);
-  border-radius: 4px;
-  color: var(--text-secondary);
-}
-
-.typing {
-  display: flex;
-  gap: 4px;
-  padding: 16px 20px;
-}
-
-.typing-dot {
-  width: 6px;
-  height: 6px;
-  background: var(--text-muted);
-  border-radius: 50%;
-  animation: typing 1.4s infinite;
-}
-
-.typing-dot:nth-child(2) { animation-delay: 0.2s; }
-.typing-dot:nth-child(3) { animation-delay: 0.4s; }
-
-@keyframes typing {
-  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
-  30% { transform: translateY(-4px); opacity: 1; }
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
 }
 
 .input-area {
-  padding: 16px 24px 12px;
-  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
 }
 
 .input-wrapper {
+  flex: 1;
   display: flex;
-  gap: 12px;
   align-items: flex-end;
+  gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 8px 8px 8px 16px;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+
+.input-wrapper:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-light);
 }
 
 .input-wrapper textarea {
   flex: 1;
-  padding: 12px 16px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border: none;
+  background: transparent;
+  resize: none;
   font-size: 14px;
   line-height: 1.5;
-  resize: none;
+  color: var(--text-primary);
+  padding: 4px 0;
   outline: none;
-  transition: border-color var(--transition);
-  background: var(--bg);
 }
 
-.input-wrapper textarea:focus {
-  border-color: var(--accent);
+.input-wrapper textarea::placeholder {
+  color: var(--text-muted);
 }
 
-.send-button {
-  width: 44px;
-  height: 44px;
+.send-btn {
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 10px;
+  background: var(--accent);
+  color: white;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--accent);
-  color: white;
-  border: none;
-  border-radius: var(--radius);
+  cursor: pointer;
   transition: all var(--transition);
+  flex-shrink: 0;
 }
 
-.send-button:hover:not(:disabled) {
+.send-btn:hover:not(:disabled) {
   background: var(--accent-hover);
+  transform: scale(1.05);
 }
 
-.send-button:disabled {
-  opacity: 0.4;
+.send-btn:disabled {
+  opacity: 0.5;
   cursor: not-allowed;
 }
 
-.input-footer {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-top: 8px;
-  padding: 0 4px;
-}
-
-.input-footer span {
-  font-size: 12px;
-  color: var(--text-muted);
+.send-btn svg {
+  width: 18px;
+  height: 18px;
 }
 
 .clear-btn {
-  background: none;
-  border: none;
-  font-size: 12px;
-  color: var(--text-muted);
-  padding: 4px 8px;
-  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: var(--radius);
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
   transition: all var(--transition);
 }
 
-.clear-btn:hover {
-  background: var(--border-light);
+.clear-btn:hover:not(:disabled) {
+  border-color: var(--error);
   color: var(--error);
+}
+
+.clear-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.clear-btn svg {
+  width: 14px;
+  height: 14px;
 }
 </style>
