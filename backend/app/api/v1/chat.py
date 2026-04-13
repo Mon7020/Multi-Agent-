@@ -1,283 +1,257 @@
-"""
-聊天 API
-支持 Chat Service V3（Context+RAG融合版）
-
-线程安全设计：
-- ConnectionManager 使用 threading.Lock 保护 WebSocket 连接
-- 所有端点都有统一的错误处理
-- 输入验证确保 session_id 和 message 格式正确
-
-核心特性：
-1. Context+RAG融合 - 双向信息流
-2. 自适应融合策略 - 根据检索质量动态选择
-3. 智能质量评估 - 自动评估检索结果质量
-"""
+﻿"""Chat API routes backed by ChatServiceV3."""
 
 import json
 import threading
-from typing import List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, WebSocket, Query
+from fastapi import APIRouter, HTTPException, Query, WebSocket
 from fastapi.responses import StreamingResponse
 
-from app.schemas import ChatRequest, ChatResponse, ChatMessage
-# 使用 Chat Service V3（Context+RAG融合版）
+from app.schemas import ChatMessage, ChatRequest, ChatResponse
 from app.services.chat_service_v3 import chat_service_v3 as chat_service
 
 router = APIRouter()
 
+_MAX_SESSION_ID_LEN = 128
+_MAX_MESSAGE_LEN = 4096
 
-# WebSocket 连接管理器（线程安全）
+
 class ConnectionManager:
+    """Thread-safe WebSocket connection manager."""
+
     def __init__(self):
         self._lock = threading.Lock()
         self.active_connections: dict[str, WebSocket] = {}
 
     async def connect(self, websocket: WebSocket, session_id: str):
-        """连接 WebSocket（线程安全）"""
         await websocket.accept()
         with self._lock:
             self.active_connections[session_id] = websocket
 
     def disconnect(self, session_id: str):
-        """断开 WebSocket 连接（线程安全）"""
         with self._lock:
-            if session_id in self.active_connections:
-                del self.active_connections[session_id]
+            self.active_connections.pop(session_id, None)
 
     async def send_message(self, session_id: str, message: dict):
-        """发送消息（线程安全）"""
         with self._lock:
-            if session_id in self.active_connections:
-                await self.active_connections[session_id].send_json(message)
+            websocket = self.active_connections.get(session_id)
+        if websocket is not None:
+            await websocket.send_json(message)
 
 
 manager = ConnectionManager()
 
 
+def _normalize_user_id(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _require_user_id(value: Optional[str]) -> str:
+    user_id = _normalize_user_id(value)
+    if not user_id:
+        raise HTTPException(status_code=401, detail="user_id is required")
+    return user_id
+
+
+async def _iter_stream_chunks(
+    session_id: str,
+    user_id: str,
+    message: str,
+    history: Optional[List[Dict[str, Any]]] = None,
+) -> AsyncIterator[Dict[str, Any]]:
+    """Unified streaming adapter for SSE and WebSocket."""
+    history = history or []
+
+    if hasattr(chat_service, "stream_process_message"):
+        async for chunk in chat_service.stream_process_message(
+            session_id=session_id,
+            user_id=user_id,
+            message=message,
+            history=history,
+        ):
+            if isinstance(chunk, dict):
+                yield chunk
+        return
+
+    result = await chat_service.process_message(
+        session_id=session_id,
+        user_id=user_id,
+        message=message,
+        history=history,
+    )
+    yield {"content": result.get("message", ""), "done": False}
+    yield {"content": "", "done": True}
+
+
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
-    """
-    处理用户消息
+    if not request.session_id or len(request.session_id) > _MAX_SESSION_ID_LEN:
+        raise HTTPException(status_code=400, detail="session_id invalid")
 
-    输入验证：
-    - session_id: 非空字符串，最大 128 字符
-    - message: 非空字符串，最大 4096 字符
-    """
-    # 输入验证
-    if not request.session_id or len(request.session_id) > 128:
-        raise HTTPException(status_code=400, detail="session_id 无效")
+    if not request.message or len(request.message) > _MAX_MESSAGE_LEN:
+        raise HTTPException(status_code=400, detail="message invalid")
 
-    if not request.message or len(request.message) > 4096:
-        raise HTTPException(status_code=400, detail="message 无效")
+    user_id = _require_user_id(request.user_id)
 
     try:
         history_dict = [h.model_dump() for h in request.history] if request.history else []
-
         result = await chat_service.process_message(
             session_id=request.session_id,
+            user_id=user_id,
             message=request.message,
-            history=history_dict
+            history=history_dict,
         )
-
         return ChatResponse(**result)
-
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except HTTPException:
         raise
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"处理消息失败: {str(e)}")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"process failed: {str(exc)}") from exc
 
 
 @router.post("/chat/stream")
 async def stream_chat(request: ChatRequest):
-    """
-    流式对话 (SSE)
+    if not request.session_id or len(request.session_id) > _MAX_SESSION_ID_LEN:
+        raise HTTPException(status_code=400, detail="session_id invalid")
 
-    输入验证：
-    - session_id: 非空字符串，最大 128 字符
-    - message: 非空字符串，最大 4096 字符
-    """
-    # 输入验证
-    if not request.session_id or len(request.session_id) > 128:
-        raise HTTPException(status_code=400, detail="session_id 无效")
+    if not request.message or len(request.message) > _MAX_MESSAGE_LEN:
+        raise HTTPException(status_code=400, detail="message invalid")
 
-    if not request.message or len(request.message) > 4096:
-        raise HTTPException(status_code=400, detail="message 无效")
+    user_id = _require_user_id(request.user_id)
 
-    def generate():
+    async def generate():
         try:
             history_dict = [h.model_dump() for h in request.history] if request.history else []
+            done_sent = False
 
-            # 检查 chat_service 是否有流式处理方法
-            if hasattr(chat_service, 'stream_process_message'):
-                for chunk in chat_service.stream_process_message(
-                    session_id=request.session_id,
-                    message=request.message,
-                    history=history_dict
-                ):
-                    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-            else:
-                # 如果没有流式方法，返回模拟的完成消息
-                yield f"data: {json.dumps({'error': '流式处理不可用'}, ensure_ascii=False)}\n\n"
+            async for chunk in _iter_stream_chunks(
+                session_id=request.session_id,
+                user_id=user_id,
+                message=request.message,
+                history=history_dict,
+            ):
+                done_sent = done_sent or bool(chunk.get("done", False))
+                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
 
-            yield f"data: {json.dumps({'done': True}, ensure_ascii=False)}\n\n"
-
-        except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+            if not done_sent:
+                yield f"data: {json.dumps({'content': '', 'done': True}, ensure_ascii=False)}\n\n"
+        except PermissionError as exc:
+            err = {"error": str(exc), "done": True, "status": 403}
+            yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
+        except ValueError as exc:
+            err = {"error": str(exc), "done": True, "status": 400}
+            yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
+        except Exception as exc:
+            err = {"error": str(exc), "done": True, "status": 500}
+            yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 @router.get("/chat/history/{session_id}")
-async def get_history(session_id: str):
-    """
-    获取对话历史
+async def get_history(session_id: str, user_id: str = Query(..., min_length=1)):
+    if not session_id or len(session_id) > _MAX_SESSION_ID_LEN:
+        raise HTTPException(status_code=400, detail="session_id invalid")
 
-    输入验证：
-    - session_id: 非空字符串，最大 128 字符
-    """
-    # 输入验证
-    if not session_id or len(session_id) > 128:
-        raise HTTPException(status_code=400, detail="session_id 无效")
+    user_id = _require_user_id(user_id)
 
     try:
-        # 使用正确的方法名
-        history = chat_service.get_session_history(session_id)
-        messages = [
-            ChatMessage(role=msg["role"], content=msg["content"])
-            for msg in history
-        ]
+        history = chat_service.get_session_history(session_id, user_id=user_id)
+        messages = [ChatMessage(role=msg["role"], content=msg["content"]) for msg in history]
         return {"session_id": session_id, "messages": messages, "count": len(messages)}
-
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except HTTPException:
         raise
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"获取历史失败: {str(e)}")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"history fetch failed: {str(exc)}") from exc
 
 
 @router.delete("/chat/history/{session_id}")
-async def clear_history(session_id: str):
-    """
-    清空对话历史
+async def clear_history(session_id: str, user_id: str = Query(..., min_length=1)):
+    if not session_id or len(session_id) > _MAX_SESSION_ID_LEN:
+        raise HTTPException(status_code=400, detail="session_id invalid")
 
-    输入验证：
-    - session_id: 非空字符串，最大 128 字符
-    """
-    # 输入验证
-    if not session_id or len(session_id) > 128:
-        raise HTTPException(status_code=400, detail="session_id 无效")
+    user_id = _require_user_id(user_id)
 
     try:
-        # 使用正确的方法名
-        success = chat_service.clear_session(session_id)
+        success = chat_service.clear_session(session_id, user_id=user_id)
         if success:
-            return {"message": "历史已清空", "session_id": session_id}
-        else:
-            return {"message": "会话不存在", "session_id": session_id}
-
+            return {"message": "history cleared", "session_id": session_id}
+        return {"message": "session not found", "session_id": session_id}
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except HTTPException:
         raise
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"清空历史失败: {str(e)}")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"history clear failed: {str(exc)}") from exc
 
 
 @router.websocket("/chat/ws/{session_id}")
 async def websocket_chat(websocket: WebSocket, session_id: str):
-    """
-    WebSocket 流式对话
-
-    支持实时流式输出，适合前端流式渲染
-
-    输入验证：
-    - session_id: 非空字符串，最大 128 字符
-    """
-    # 输入验证
-    if not session_id or len(session_id) > 128:
-        await websocket.close(code=4000, reason="session_id 无效")
+    if not session_id or len(session_id) > _MAX_SESSION_ID_LEN:
+        await websocket.close(code=4000, reason="session_id invalid")
         return
 
     await manager.connect(websocket, session_id)
 
     try:
-        # 加载招呼消息
-        greeting_message = chat_service.greeting_message if hasattr(chat_service, 'greeting_message') else "您好！有什么可以帮您的吗？"
+        greeting_message = (
+            chat_service.greeting_message
+            if hasattr(chat_service, "greeting_message")
+            else "Hello, how can I help you?"
+        )
+        await manager.send_message(
+            session_id,
+            {"type": "greeting", "content": greeting_message, "is_greeting": True},
+        )
 
-        # WebSocket连接建立后，立即发送招呼消息
-        await manager.send_message(session_id, {
-            "type": "greeting",
-            "content": greeting_message,
-            "is_greeting": True
-        })
-
-        # 接收初始消息
         data = await websocket.receive_text()
         message_data = json.loads(data)
 
-        message = message_data.get("message", "")
+        message = (message_data.get("message") or "").strip()
         history = message_data.get("history", [])
+        user_id = _normalize_user_id(message_data.get("user_id") or websocket.query_params.get("user_id"))
 
-        # 验证 message
-        if not message or len(message) > 4096:
-            await manager.send_message(session_id, {
-                "type": "error",
-                "content": "message 无效"
-            })
+        if not user_id:
+            await manager.send_message(session_id, {"type": "error", "content": "user_id is required"})
             return
 
-        # 发送思考中状态
-        await manager.send_message(session_id, {
-            "type": "status",
-            "content": "思考中..."
-        })
+        if not message or len(message) > _MAX_MESSAGE_LEN:
+            await manager.send_message(session_id, {"type": "error", "content": "message invalid"})
+            return
 
-        # 流式处理
-        if hasattr(chat_service, 'stream_process_message'):
-            for chunk in chat_service.stream_process_message(
-                session_id=session_id,
-                message=message,
-                history=history
-            ):
-                await manager.send_message(session_id, {
+        await manager.send_message(session_id, {"type": "status", "content": "thinking..."})
+
+        async for chunk in _iter_stream_chunks(
+            session_id=session_id,
+            user_id=user_id,
+            message=message,
+            history=history,
+        ):
+            await manager.send_message(
+                session_id,
+                {
                     "type": "chunk",
                     "content": chunk.get("content", ""),
-                    "done": chunk.get("done", False)
-                })
-        else:
-            # 如果没有流式方法，直接处理
-            result = await chat_service.process_message(
-                session_id=session_id,
-                message=message,
-                history=history
+                    "done": chunk.get("done", False),
+                    "meta": chunk.get("meta"),
+                },
             )
-            await manager.send_message(session_id, {
-                "type": "chunk",
-                "content": result.get("message", ""),
-                "done": True
-            })
 
-        # 发送完成状态
-        await manager.send_message(session_id, {
-            "type": "done",
-            "content": ""
-        })
+        await manager.send_message(session_id, {"type": "done", "content": ""})
 
+    except PermissionError as exc:
+        await manager.send_message(session_id, {"type": "error", "content": str(exc)})
     except json.JSONDecodeError:
-        await manager.send_message(session_id, {
-            "type": "error",
-            "content": "无效的 JSON 格式"
-        })
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        await manager.send_message(session_id, {
-            "type": "error",
-            "content": f"处理失败: {str(e)}"
-        })
+        await manager.send_message(session_id, {"type": "error", "content": "invalid JSON"})
+    except Exception as exc:
+        await manager.send_message(session_id, {"type": "error", "content": f"process failed: {str(exc)}"})
     finally:
         manager.disconnect(session_id)

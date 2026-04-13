@@ -1,87 +1,189 @@
 """
-统一会话上下文管理器（线程安全版本）
-打通 Agent Memory 和 Skill Context，实现会话状态的统一管理
-
-线程安全设计：
-1. SessionContextManager 使用 threading.Lock 保护 _sessions 字典
-2. SessionContext 使用 threading.RLock 保护所有可变状态
+Unified session context manager with thread-safe three-tier memory integration.
 """
 
+import re
 import threading
-from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 from langchain.memory import ConversationBufferMemory
-from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from core.logger import LoggerManager
+from tools.rag.context_engineering import (
+    CompressionStrategy,
+    IntentEvolutionTracker,
+    LongTermMemoryManager,
+    MediumTermMemoryManager,
+    ShortTermMemoryManager,
+)
 
 logger = LoggerManager.get_logger("session_context")
 
 
 @dataclass
 class TurnRecord:
-    """单轮对话记录"""
+    """Single conversation turn record."""
+
     role: str  # user / assistant
     content: str
-    agent_name: Optional[str] = None  # 处理该轮对话的 Agent/Skill 名称
-    intent: Optional[str] = None  # 识别到的意图
-    rag_results: Optional[List[Dict]] = None  # RAG 检索结果
-    evaluation_score: float = 0.0  # 该轮输出的评估分数
+    agent_name: Optional[str] = None
+    intent: Optional[str] = None
+    rag_results: Optional[List[Dict]] = None
+    evaluation_score: float = 0.0
     metadata: Dict[str, Any] = field(default_factory=dict)
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
 
 class SessionContext:
-    """
-    统一会话上下文（线程安全版本）
+    """Thread-safe session context with real three-tier memory."""
 
-    核心设计：
-    - memory: LangChain ConversationBufferMemory，用于 LLM 对话上下文
-    - skill_context: Skill 执行产生的业务上下文（客户类型、产品偏好等）
-    - turn_history: 完整的对话轨迹，用于 evaluation 和追踪
-    - metadata: 会话元数据（用户信息、session 创建时间等）
-
-    线程安全：所有可变状态都通过 RLock 保护
-    """
-
-    def __init__(self, session_id: str, max_history: int = 50):
+    def __init__(self, session_id: str, max_history: int = 50, user_id: Optional[str] = None):
         self.session_id = session_id
+        self.user_id = user_id or session_id
         self.max_history = max_history
         self.created_at = datetime.now()
 
-        # 线程锁 - 保护所有可变状态
         self._lock = threading.RLock()
 
-        # LangChain Memory，用于 LLM 对话上下文
         self.memory = ConversationBufferMemory(
             memory_key="chat_history",
             return_messages=True,
-            max_len=max_history
+            max_len=max_history,
         )
 
-        # Skill 执行产生的业务上下文
-        # 结构: {skill_name: SkillResult.data}
         self.skill_context: Dict[str, Any] = {}
-
-        # 客户元数据
         self.metadata: Dict[str, Any] = {
-            "customer_type": None,  # rational / price_sensitive / difficult / hesitant / urgent
+            "customer_type": None,
             "customer_name": None,
-            "current_product": None,  # 当前讨论的产品
-            "preference": None,  # 用户偏好
-            "discount_level": 1,  # 当前谈判折扣层级
-            "total_spent": 0.0,  # 累计消费（如果是回头客）
+            "current_product": None,
+            "preference": None,
+            "discount_level": 1,
+            "total_spent": 0.0,
         }
 
-        # 对话轨迹（用于 evaluation）
         self.turn_history: List[TurnRecord] = []
-
-        # RAG 检索结果缓存（避免重复检索）
         self.rag_cache: Dict[str, Any] = {}
 
-        logger.info(f"[SessionContext] 会话创建（线程安全）: {session_id}")
+        # Real three-tier memory for this session.
+        self.short_term_memory = ShortTermMemoryManager(
+            max_turns=max_history * 2,
+            compression_threshold=0.92,
+            max_context_tokens=4000,
+        )
+        self.medium_term_memory = MediumTermMemoryManager(
+            max_compressed_entries=20,
+            compression_ratio=0.1,
+        )
+        self.long_term_memory = LongTermMemoryManager()
+        self.intent_tracker = IntentEvolutionTracker()
+        self._last_compressed_turn_id = -1
+
+        self._load_long_term_preferences()
+        logger.info(f"[SessionContext] session created: {session_id}, user={self.user_id}")
+
+    def _load_long_term_preferences(self) -> None:
+        """Load persisted long-term profile into current metadata."""
+        profile = self.long_term_memory.get_or_create_profile(self.user_id)
+        for key in ["customer_type", "customer_name", "current_product", "preference", "total_spent", "discount_level"]:
+            value = profile.preferences.get(key)
+            if value is None:
+                continue
+            if key == "total_spent" and self.metadata.get(key, 0.0) != 0.0:
+                continue
+            if self.metadata.get(key) is None or self.metadata.get(key) == 0.0:
+                self.metadata[key] = value
+
+    def _extract_entities_from_text(self, content: str) -> List[str]:
+        """Extract simple entities from text for memory indexing."""
+        if not content:
+            return []
+
+        entities: List[str] = []
+
+        model_pattern = r"\b[A-Za-z]+\d+[A-Za-z0-9\-\+]*\b"
+        entities.extend(re.findall(model_pattern, content))
+
+        english_phrase_pattern = r"\b[A-Za-z][A-Za-z0-9\-]{2,}\b"
+        entities.extend(re.findall(english_phrase_pattern, content))
+
+        seen = set()
+        deduped = []
+        for entity in entities:
+            normalized = entity.strip()
+            if not normalized or normalized.lower() in seen:
+                continue
+            seen.add(normalized.lower())
+            deduped.append(normalized)
+
+        return deduped[:8]
+
+    def _sync_metadata_to_long_term(self) -> None:
+        """Sync key metadata fields to long-term profile."""
+        sync_keys = [
+            "customer_type",
+            "customer_name",
+            "current_product",
+            "preference",
+            "discount_level",
+            "service_strategy",
+            "total_spent",
+        ]
+
+        for key in sync_keys:
+            value = self.metadata.get(key)
+            if value is None:
+                continue
+            if key == "total_spent" and float(value or 0) <= 0:
+                continue
+            self.long_term_memory.update_preference(self.user_id, key, value)
+
+        discussed_products = self.metadata.get("discussed_products", [])
+        if isinstance(discussed_products, list):
+            for product in discussed_products[-20:]:
+                if product:
+                    self.long_term_memory.add_entity(self.user_id, str(product), "discussed_product")
+
+    def _try_compress_short_term(self) -> None:
+        """Compress short-term memory into medium-term memory when threshold is reached."""
+        if not self.short_term_memory.should_compress():
+            return
+
+        recent_turns = self.short_term_memory.get_recent_turns(self.max_history * 2)
+        if not recent_turns:
+            return
+
+        latest_turn_id = recent_turns[-1].turn_id
+        if latest_turn_id <= self._last_compressed_turn_id:
+            return
+
+        compressed = self.medium_term_memory.compress(
+            recent_turns,
+            strategy=CompressionStrategy.SEMANTIC_SUMMARY,
+        )
+        if not compressed:
+            return
+
+        self._last_compressed_turn_id = latest_turn_id
+        self.metadata["compressed_memory_count"] = len(self.medium_term_memory.compressed_memories)
+        self.metadata["last_compressed_summary"] = compressed.summary
+
+        self.skill_context["three_tier_medium_memory"] = {
+            "data": {
+                "summary": compressed.summary,
+                "key_entities": compressed.key_entities,
+                "discussed_topics": compressed.discussed_topics,
+                "timestamp": compressed.timestamp,
+            },
+            "timestamp": datetime.now().isoformat(),
+            "metadata": {"source": "auto_compression"},
+        }
+
+        logger.info(
+            "[SessionContext] medium-term compression triggered: "
+            f"turn_id={latest_turn_id}, compressed_count={len(self.medium_term_memory.compressed_memories)}"
+        )
 
     def add_turn(
         self,
@@ -91,20 +193,9 @@ class SessionContext:
         intent: str = None,
         rag_results: List[Dict] = None,
         evaluation_score: float = 0.0,
-        metadata: Dict[str, Any] = None
+        metadata: Dict[str, Any] = None,
     ) -> None:
-        """
-        添加一轮对话记录（线程安全）
-
-        Args:
-            role: user / assistant
-            content: 对话内容
-            agent_name: 处理该轮的 Agent/Skill 名称
-            intent: 识别到的意图
-            rag_results: RAG 检索结果
-            evaluation_score: 输出质量评分
-            metadata: 额外元数据
-        """
+        """Add one turn and update all context layers."""
         with self._lock:
             turn = TurnRecord(
                 role=role,
@@ -113,42 +204,60 @@ class SessionContext:
                 intent=intent,
                 rag_results=rag_results,
                 evaluation_score=evaluation_score,
-                metadata=metadata or {}
+                metadata=metadata or {},
             )
             self.turn_history.append(turn)
 
-            # 更新 memory（供 LLM 使用）
             if role == "user":
                 self.memory.chat_memory.add_user_message(content)
             else:
                 self.memory.chat_memory.add_ai_message(content)
 
-            # 维护大小限制
             if len(self.turn_history) > self.max_history * 2:
-                self.turn_history = self.turn_history[-self.max_history:]
+                self.turn_history = self.turn_history[-self.max_history :]
+
+            raw_entities = (metadata or {}).get("entities", [])
+            entities = raw_entities if isinstance(raw_entities, list) and raw_entities else self._extract_entities_from_text(content)
+
+            confidence = (metadata or {}).get("confidence", 1.0)
+            self.short_term_memory.add_turn(
+                role=role,
+                content=content,
+                intent=intent,
+                entities=entities,
+                rag_results=rag_results,
+                metadata=metadata or {},
+            )
+
+            if intent:
+                self.intent_tracker.track_intent(
+                    intent=intent,
+                    confidence=confidence,
+                    entities=entities,
+                )
+
+            if role == "user":
+                profile = self.long_term_memory.get_or_create_profile(self.user_id)
+                profile.interaction_history.append(content[:200])
+                for entity in entities[:5]:
+                    self.long_term_memory.add_entity(self.user_id, entity, intent or "general")
+
+            self._try_compress_short_term()
 
     def update_skill_context(
         self,
         skill_name: str,
         result_data: Any,
-        metadata: Dict[str, Any] = None
+        metadata: Dict[str, Any] = None,
     ) -> None:
-        """
-        更新 Skill 产生的业务上下文（线程安全）
-
-        Args:
-            skill_name: Skill 名称
-            result_data: Skill 执行结果数据
-            metadata: 额外元数据
-        """
+        """Update skill context and sync structured fields to metadata/long-term memory."""
         with self._lock:
             self.skill_context[skill_name] = {
                 "data": result_data,
                 "timestamp": datetime.now().isoformat(),
-                "metadata": metadata or {}
+                "metadata": metadata or {},
             }
 
-            # 从 Skill 结果中提取关键信息到 metadata
             if skill_name == "customer_classifier" and isinstance(result_data, dict):
                 if "customer_type" in result_data:
                     self.metadata["customer_type"] = result_data["customer_type"]
@@ -162,61 +271,92 @@ class SessionContext:
                 if "discount_level" in result_data:
                     self.metadata["discount_level"] = result_data["discount_level"]
 
-            logger.debug(f"[SessionContext] Skill上下文更新: {skill_name}")
+            elif skill_name == "sales_agent" and isinstance(result_data, dict):
+                product_data = result_data.get("product", {})
+                if isinstance(product_data, dict) and product_data.get("name"):
+                    self.metadata["current_product"] = product_data.get("name")
+
+            self._sync_metadata_to_long_term()
+            logger.debug(f"[SessionContext] skill context updated: {skill_name}")
 
     def get_skill_context(self, skill_name: str) -> Optional[Any]:
-        """获取指定 Skill 的上下文（线程安全）"""
+        """Get one skill context entry."""
         with self._lock:
-            return self.skill_context.get(skill_name)
+            value = self.skill_context.get(skill_name)
+            if isinstance(value, dict) and "data" in value:
+                return value.get("data")
+            return value
 
-    def get_unified_context(self) -> Dict[str, Any]:
-        """
-        获取统一的上下文字典（线程安全）
-
-        用于：
-        - 传递给 SkillManager.process()
-        - 传递给 SupervisorAgent 做决策
-        """
+    def get_three_tier_context(self) -> Dict[str, Any]:
+        """Return a serializable snapshot of short/medium/long-term memory."""
         with self._lock:
+            short_turns = self.short_term_memory.get_recent_turns(10)
+            medium_memories = self.medium_term_memory.get_recent_compressed(3)
+            long_term_text = self.long_term_memory.get_user_context(self.user_id)
+            medium_summary = self.medium_term_memory.get_all_summaries()
+            intent_continuity = self.intent_tracker.get_continuity_context()
+
             return {
-                "session_id": self.session_id,
-                "memory": self.memory.load_memory_variables({}),
-                "skill_context": dict(self.skill_context),  # 返回副本
-                "metadata": dict(self.metadata),  # 返回副本
-                "recent_history": [
-                    {"role": t.role, "content": t.content}
-                    for t in self.turn_history[-10:]
-                ]
+                "short_term_turns": [
+                    {
+                        "turn_id": t.turn_id,
+                        "role": t.role,
+                        "content": t.content,
+                        "intent": t.intent,
+                        "entities": list(t.entities),
+                        "timestamp": t.timestamp,
+                    }
+                    for t in short_turns
+                ],
+                "medium_term_memories": [
+                    {
+                        "summary": m.summary,
+                        "key_entities": list(m.key_entities),
+                        "discussed_topics": list(m.discussed_topics),
+                        "timestamp": m.timestamp,
+                        "original_turn_count": m.original_turn_count,
+                        "compression_ratio": m.compression_ratio,
+                    }
+                    for m in medium_memories
+                ],
+                "medium_term_summary": medium_summary,
+                "long_term_text": long_term_text,
+                "intent_continuity": intent_continuity,
+                "stats": {
+                    "short_term_turns": len(self.short_term_memory.turns),
+                    "compressed_memories": len(self.medium_term_memory.compressed_memories),
+                    "density": self.short_term_memory.calculate_density(),
+                },
             }
 
-    def get_context_for_skill(self, skill_name: str) -> Dict[str, Any]:
-        """
-        获取传递给特定 Skill 的上下文（线程安全）
-
-        Args:
-            skill_name: Skill 名称
-
-        Returns:
-            包含历史和 Skill 上下文的字典
-        """
+    def persist_long_term_memory(self) -> bool:
+        """Persist long-term profile to disk."""
         with self._lock:
-            unified = {
+            self._sync_metadata_to_long_term()
+            return self.long_term_memory.save_profile(self.user_id)
+
+    def get_unified_context(self) -> Dict[str, Any]:
+        """Get unified context for downstream routing and skills."""
+        with self._lock:
+            three_tier_context = self.get_three_tier_context()
+            return {
                 "session_id": self.session_id,
+                "user_id": self.user_id,
                 "memory": self.memory.load_memory_variables({}),
                 "skill_context": dict(self.skill_context),
                 "metadata": dict(self.metadata),
-                "recent_history": [
-                    {"role": t.role, "content": t.content}
-                    for t in self.turn_history[-10:]
-                ]
+                "three_tier_context": three_tier_context,
+                "recent_history": [{"role": t.role, "content": t.content} for t in self.turn_history[-10:]],
             }
-            skill_context = unified.get("skill_context", {})
 
-            # 添加历史（用于需要历史记录的 Skill）
-            history = [
-                {"role": t.role, "content": t.content}
-                for t in self.turn_history[-6:]
-            ]
+    def get_context_for_skill(self, skill_name: str) -> Dict[str, Any]:
+        """Get context payload for one skill."""
+        with self._lock:
+            unified = self.get_unified_context()
+            skill_context = unified.get("skill_context", {})
+            three_tier_context = unified.get("three_tier_context", {})
+
+            history = [{"role": t.role, "content": t.content} for t in self.turn_history[-6:]]
 
             return {
                 "query": unified["recent_history"][-1]["content"] if unified["recent_history"] else "",
@@ -226,18 +366,22 @@ class SessionContext:
                 "current_product": self.metadata.get("current_product"),
                 "preference": self.metadata.get("preference"),
                 "discount_level": self.metadata.get("discount_level", 1),
-                **{f"{skill_name}_result": skill_context.get(skill_name)}
+                "three_tier_context": three_tier_context,
+                "medium_term_summary": three_tier_context.get("medium_term_summary", ""),
+                "long_term_context": three_tier_context.get("long_term_text", ""),
+                "intent_continuity": three_tier_context.get("intent_continuity", ""),
+                **{f"{skill_name}_result": skill_context.get(skill_name)},
             }
 
     def update_rag_cache(self, query: str, results: List[Dict]) -> None:
-        """更新 RAG 结果缓存（线程安全）"""
+        """Update RAG cache in this session."""
         with self._lock:
             self.rag_cache["last_query"] = query
             self.rag_cache["last_rag_results"] = results
             self.rag_cache["recent_rag_results"] = results
 
     def get_average_evaluation_score(self) -> float:
-        """获取平均评估分数（线程安全）"""
+        """Get average non-zero evaluation score."""
         with self._lock:
             if not self.turn_history:
                 return 0.0
@@ -246,24 +390,26 @@ class SessionContext:
             return sum(scores) / len(scores) if scores else 0.0
 
     def get_session_summary(self) -> Dict[str, Any]:
-        """获取会话摘要（线程安全）"""
+        """Get session summary with three-tier memory stats."""
         with self._lock:
             total_turns = len(self.turn_history)
             user_turns = sum(1 for t in self.turn_history if t.role == "user")
             assistant_turns = total_turns - user_turns
 
-            skills_used = list(set(
-                t.agent_name for t in self.turn_history
-                if t.agent_name and t.agent_name != "general"
-            ))
+            skills_used = list(
+                set(
+                    t.agent_name
+                    for t in self.turn_history
+                    if t.agent_name and t.agent_name != "general"
+                )
+            )
 
-            intents_detected = list(set(
-                t.intent for t in self.turn_history
-                if t.intent
-            ))
+            intents_detected = list(set(t.intent for t in self.turn_history if t.intent))
+            three_tier = self.get_three_tier_context()
 
             return {
                 "session_id": self.session_id,
+                "user_id": self.user_id,
                 "created_at": self.created_at.isoformat(),
                 "duration_seconds": (datetime.now() - self.created_at).total_seconds(),
                 "total_turns": total_turns,
@@ -274,11 +420,12 @@ class SessionContext:
                 "customer_type": self.metadata.get("customer_type"),
                 "current_product": self.metadata.get("current_product"),
                 "avg_evaluation_score": round(self.get_average_evaluation_score(), 3),
-                "metadata": dict(self.metadata)
+                "metadata": dict(self.metadata),
+                "three_tier_stats": three_tier.get("stats", {}),
             }
 
     def clear(self) -> None:
-        """清空会话（线程安全）"""
+        """Clear in-memory session state."""
         with self._lock:
             self.memory.clear()
             self.skill_context.clear()
@@ -292,22 +439,27 @@ class SessionContext:
                 "discount_level": 1,
                 "total_spent": 0.0,
             }
-            logger.info(f"[SessionContext] 会话已清空: {self.session_id}")
+
+            self.short_term_memory = ShortTermMemoryManager(
+                max_turns=self.max_history * 2,
+                compression_threshold=0.92,
+                max_context_tokens=4000,
+            )
+            self.medium_term_memory = MediumTermMemoryManager(
+                max_compressed_entries=20,
+                compression_ratio=0.1,
+            )
+            self.intent_tracker = IntentEvolutionTracker()
+            self._last_compressed_turn_id = -1
+
+            logger.info(f"[SessionContext] session cleared: {self.session_id}")
 
 
 class SessionContextManager:
-    """
-    SessionContext 管理器（线程安全版本）
-
-    负责创建、存储、检索会话上下文
-
-    线程安全：
-    - 使用 threading.Lock 保护 _sessions 字典的并发访问
-    - 每个 SessionContext 内部使用 RLock 保护自己的状态
-    """
+    """Thread-safe singleton manager for all session contexts."""
 
     _instance = None
-    _lock = threading.Lock()  # 类级别的锁，保护单例创建
+    _lock = threading.Lock()
 
     def __new__(cls):
         with cls._lock:
@@ -317,60 +469,54 @@ class SessionContextManager:
             return cls._instance
 
     def __init__(self):
-        # 双重检查锁定已经在 __new__ 中处理
         with self._lock:
             if self._initialized:
                 return
             self._initialized = True
-            # 实例级别的锁，保护 _sessions 字典
             self._sessions_lock = threading.Lock()
             self._sessions: Dict[str, SessionContext] = {}
-            logger.info("[SessionContextManager] 初始化完成（线程安全）")
+            logger.info("[SessionContextManager] initialized")
 
-    def create_session(self, session_id: str, max_history: int = 50) -> SessionContext:
-        """
-        创建或获取会话（线程安全）
-
-        Args:
-            session_id: 会话 ID
-            max_history: 最大历史记录数
-
-        Returns:
-            SessionContext 实例
-        """
+    def create_session(
+        self,
+        session_id: str,
+        max_history: int = 50,
+        user_id: Optional[str] = None,
+    ) -> SessionContext:
+        """Create or get one session context."""
         with self._sessions_lock:
             if session_id not in self._sessions:
-                self._sessions[session_id] = SessionContext(session_id, max_history)
-                logger.info(f"[SessionContextManager] 创建新会话: {session_id}")
+                self._sessions[session_id] = SessionContext(
+                    session_id=session_id,
+                    max_history=max_history,
+                    user_id=user_id,
+                )
+                logger.info(f"[SessionContextManager] created session: {session_id}")
             return self._sessions[session_id]
 
     def get_session(self, session_id: str) -> Optional[SessionContext]:
-        """获取已有会话（线程安全）"""
+        """Get an existing session context."""
         with self._sessions_lock:
             return self._sessions.get(session_id)
 
     def delete_session(self, session_id: str) -> bool:
-        """删除会话（线程安全）"""
+        """Delete one session context."""
         with self._sessions_lock:
             if session_id in self._sessions:
                 del self._sessions[session_id]
-                logger.info(f"[SessionContextManager] 删除会话: {session_id}")
+                logger.info(f"[SessionContextManager] deleted session: {session_id}")
                 return True
             return False
 
     def list_sessions(self) -> List[str]:
-        """列出所有会话 ID（线程安全）"""
+        """List all live session IDs."""
         with self._sessions_lock:
             return list(self._sessions.keys())
 
     def get_all_sessions_summary(self) -> List[Dict[str, Any]]:
-        """获取所有会话摘要（线程安全）"""
+        """Get summary for all sessions."""
         with self._sessions_lock:
-            return [
-                session.get_session_summary()
-                for session in self._sessions.values()
-            ]
+            return [session.get_session_summary() for session in self._sessions.values()]
 
 
-# 全局单例
 session_context_manager = SessionContextManager()

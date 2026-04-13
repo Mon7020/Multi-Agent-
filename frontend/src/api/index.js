@@ -1,4 +1,4 @@
-import axios from 'axios'
+﻿import axios from 'axios'
 
 const API_BASE = '/api/v1'
 
@@ -10,33 +10,43 @@ const api = axios.create({
   }
 })
 
+function encodeDocId(docId) {
+  return encodeURIComponent(String(docId))
+}
+
 export const chatApi = {
-  sendMessage(sessionId, message, history = []) {
+  sendMessage(sessionId, userId, message, history = []) {
     return api.post('/chat', {
       session_id: sessionId,
-      message: message,
-      history: history
+      user_id: userId,
+      message,
+      history
     })
   },
 
-  streamMessage(sessionId, message, history = []) {
+  streamMessage(sessionId, userId, message, history = []) {
     return fetch(`${API_BASE}/chat/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         session_id: sessionId,
-        message: message,
-        history: history
+        user_id: userId,
+        message,
+        history
       })
     })
   },
 
-  getHistory(sessionId) {
-    return api.get(`/chat/history/${sessionId}`)
+  getHistory(sessionId, userId) {
+    return api.get(`/chat/history/${encodeURIComponent(sessionId)}`, {
+      params: { user_id: userId }
+    })
   },
 
-  clearHistory(sessionId) {
-    return api.delete(`/chat/history/${sessionId}`)
+  clearHistory(sessionId, userId) {
+    return api.delete(`/chat/history/${encodeURIComponent(sessionId)}`, {
+      params: { user_id: userId }
+    })
   }
 }
 
@@ -46,7 +56,7 @@ export const skillsApi = {
   },
 
   getSkill(skillName) {
-    return api.get(`/skills/${skillName}`)
+    return api.get(`/skills/${encodeURIComponent(skillName)}`)
   },
 
   getStats() {
@@ -61,17 +71,14 @@ export const healthApi = {
 }
 
 export const knowledgeBaseApi = {
-  // 获取文档列表
   getDocuments() {
     return api.get('/knowledge-base')
   },
 
-  // 获取单个文档内容
   getDocument(docId) {
-    return api.get(`/knowledge-base/${docId}`)
+    return api.get(`/knowledge-base/${encodeDocId(docId)}`)
   },
 
-  // 上传文档
   uploadDocument(file, chunkSize = 400, chunkOverlap = 50) {
     const formData = new FormData()
     formData.append('file', file)
@@ -82,32 +89,26 @@ export const knowledgeBaseApi = {
     })
   },
 
-  // 更新文档
   updateDocument(docId, content) {
-    return api.put(`/knowledge-base/${docId}`, { content })
+    return api.put(`/knowledge-base/${encodeDocId(docId)}`, { content })
   },
 
-  // 删除文档
   deleteDocument(docId) {
-    return api.delete(`/knowledge-base/${docId}`)
+    return api.delete(`/knowledge-base/${encodeDocId(docId)}`)
   },
 
-  // 获取RAG参数
   getParams() {
     return api.get('/knowledge-base/params')
   },
 
-  // 更新RAG参数
   updateParams(params) {
     return api.post('/knowledge-base/params', params)
   },
 
-  // 重新加载知识库
   reloadKnowledgeBase() {
     return api.post('/knowledge-base/reload')
   },
 
-  // 清除缓存
   clearCache() {
     return api.post('/knowledge-base/clear-cache')
   }

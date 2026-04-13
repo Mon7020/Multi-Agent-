@@ -1,40 +1,53 @@
 """
 评测模块
 
-提供RAG系统的评测功能：
-- metrics.py: 基础指标定义
-- semantic_evaluator.py: 语义评测器（改进版）
+提供 Test2LangChain 项目的综合评测能力，包括：
+
+1. ResponseEvaluator - Agent 输出质量评测
+2. SemanticEvaluator - 语义相似度评测
+3. MetricsCollector - 指标收集和追踪
+4. EvaluationSuite - 综合评测套件
+
+评测维度：
+- Relevance: 回复相关性
+- Accuracy: 信息准确性
+- Completeness: 回复完整度
+- Helpfulness: 整体有用性
+- RAG Recall: RAG 召回率
+- Hallucination Rate: 幻觉率
 
 使用示例：
-    from evaluation.semantic_evaluator import SemanticEvaluator
-    from evaluation.metrics import MetricType, MetricResult, EvaluationReport
+    from evaluation import EvaluationSuite
+    import asyncio
+
+    suite = EvaluationSuite()
+    results = asyncio.run(suite.run_all())
 """
 
-from .metrics import (
+from evaluation.metrics import (
     MetricType,
     MetricResult,
     EvaluationReport,
     METRIC_THRESHOLDS
 )
-
-try:
-    from .semantic_evaluator import (
-        SemanticEvaluator,
-        SemanticMetrics
-    )
-except ImportError as e:
-    import logging
-    logging.getLogger("evaluation").warning(f"语义评测器导入失败: {e}")
-    SemanticEvaluator = None
-    SemanticMetrics = None
+from evaluation.evaluator import ResponseEvaluator
+from evaluation.semantic_evaluator import SemanticEvaluator
+from evaluation.tracker import EvaluationTracker
+from evaluation.runner import EvaluationSuite
 
 __all__ = [
-    # 基础指标
-    'MetricType',
-    'MetricResult',
-    'EvaluationReport',
-    'METRIC_THRESHOLDS',
-    # 语义评测器
-    'SemanticEvaluator',
-    'SemanticMetrics',
+    # 指标
+    "MetricType",
+    "MetricResult",
+    "EvaluationReport",
+    "METRIC_THRESHOLDS",
+    # 评测器
+    "ResponseEvaluator",
+    "SemanticEvaluator",
+    # 追踪器
+    "EvaluationTracker",
+    # 综合评测
+    "EvaluationSuite",
 ]
+
+__version__ = "1.0.0"

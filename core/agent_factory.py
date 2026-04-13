@@ -1,13 +1,15 @@
 """
 Agent 工厂模块
 统一创建和管理所有 Agent 实例
+
+已更新为 LangChain 0.3.x 兼容版本
 """
 
 import os
 import sys
 from typing import Dict, List, Optional, Any
 
-from langchain.chat_models import ChatOpenAI
+from langchain_openai import ChatOpenAI
 from langchain.memory import ConversationBufferMemory
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.agents import AgentExecutor, create_openai_tools_agent

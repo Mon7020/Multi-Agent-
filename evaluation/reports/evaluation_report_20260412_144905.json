@@ -1,0 +1,85 @@
+{
+  "mcp": {
+    "protocol": {
+      "passed": true,
+      "details": "协议消息序列化/反序列化正常"
+    },
+    "tools": {
+      "passed": true,
+      "details": "工具注册正常，共 4 个工具"
+    },
+    "client": {
+      "passed": true,
+      "details": "MCP 客户端初始化正常"
+    },
+    "server": {
+      "passed": true,
+      "details": "MCP 服务器初始化正常"
+    },
+    "integrations": {
+      "passed": true,
+      "details": "集成完成，共 11 个工具"
+    },
+    "score": 1.0
+  },
+  "skills": {
+    "registry": {
+      "passed": true,
+      "details": "技能注册表正常，共 0 个技能"
+    },
+    "manager": {
+      "passed": true,
+      "details": "技能管理器正常，共 5 个技能"
+    },
+    "individual_skills": {
+      "passed": true,
+      "details": "技能初始化正常: ['sales_agent', 'tech_support', 'negotiation', 'customer_classifier', 'chat']"
+    },
+    "score": 1.0
+  },
+  "rag": {
+    "import": {
+      "passed": true,
+      "details": "RAG 模块导入正常"
+    },
+    "initialization": {
+      "passed": true,
+      "details": "RAG 初始化检查通过"
+    },
+    "score": 1.0
+  },
+  "agent": {
+    "factory": {
+      "passed": true,
+      "details": "Agent 工厂正常: ['supervisor', 'sales_agent', 'tech_support_agent']"
+    },
+    "supervisor": {
+      "passed": true,
+      "details": "Supervisor Agent 初始化正常"
+    },
+    "context": {
+      "passed": true,
+      "details": "会话上下文管理正常"
+    },
+    "score": 1.0
+  },
+  "integration": {
+    "api_endpoints": {
+      "passed": false,
+      "error": "No module named 'app'"
+    },
+    "end_to_end": {
+      "passed": false,
+      "error": "No module named 'app'"
+    },
+    "score": 0.0
+  },
+  "summary": {
+    "total_tests": 15,
+    "passed_tests": 13,
+    "failed_tests": 2,
+    "pass_rate": 0.8666666666666667,
+    "total_time_seconds": 3.08,
+    "timestamp": "2026-04-12T14:49:05.221823"
+  }
+}

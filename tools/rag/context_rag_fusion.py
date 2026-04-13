@@ -727,7 +727,16 @@ class ContextRAGFusionLayer:
                     "total_process_time": total_time,
                     "entities": enhanced_query_obj.entities,
                     "injection_summary": injection_summary,
-                    "context_strength": context_strength
+                    "context_strength": context_strength,
+                    "retrieval_result": {
+                        "success": rag_result.get("success", bool(documents)),
+                        "documents": documents
+                    },
+                    "three_tier_context": (
+                        session_context.get_three_tier_context()
+                        if hasattr(session_context, "get_three_tier_context")
+                        else {}
+                    )
                 }
             )
 
@@ -737,7 +746,19 @@ class ContextRAGFusionLayer:
             return result
 
     def _extract_short_term(self, context: SessionContext) -> str:
-        """提取短期上下文"""
+        """Extract short-term context."""
+        if hasattr(context, "get_three_tier_context"):
+            tier_context = context.get_three_tier_context()
+            short_turns = tier_context.get("short_term_turns", [])
+            if short_turns:
+                parts = ["【当前对话】"]
+                for turn in short_turns[-5:]:
+                    role = "用户" if turn.get("role") == "user" else "助手"
+                    content = turn.get("content", "")
+                    content = content[:100] + "..." if len(content) > 100 else content
+                    parts.append(f"{role}: {content}")
+                return "\n".join(parts)
+
         recent_turns = [
             {"role": t.role, "content": t.content}
             for t in context.turn_history[-8:]
@@ -755,7 +776,13 @@ class ContextRAGFusionLayer:
         return "\n".join(parts)
 
     def _extract_medium_term(self, context: SessionContext) -> str:
-        """提取中期上下文（压缩记忆）"""
+        """Extract medium-term compressed context."""
+        if hasattr(context, "get_three_tier_context"):
+            tier_context = context.get_three_tier_context()
+            medium_summary = tier_context.get("medium_term_summary", "")
+            if medium_summary:
+                return f"【历史摘要】\n{medium_summary}"
+
         metadata = context.metadata
         discussed_products = metadata.get("discussed_products", [])
 
@@ -764,12 +791,18 @@ class ContextRAGFusionLayer:
 
         parts = ["【历史讨论】"]
         for product in discussed_products[-5:]:
-            parts.append(f"• {product}")
+            parts.append(f"- {product}")
 
         return "\n".join(parts)
 
     def _extract_long_term(self, context: SessionContext) -> str:
-        """提取长期上下文"""
+        """Extract long-term user profile context."""
+        if hasattr(context, "get_three_tier_context"):
+            tier_context = context.get_three_tier_context()
+            long_term_text = tier_context.get("long_term_text", "")
+            if long_term_text:
+                return f"【用户背景】\n{long_term_text}"
+
         metadata = context.metadata
 
         parts = ["【用户背景】"]
@@ -778,7 +811,7 @@ class ContextRAGFusionLayer:
             parts.append(f"客户类型: {metadata['customer_type']}")
 
         if metadata.get("total_spent", 0) > 0:
-            parts.append(f"累计消费: ¥{metadata['total_spent']:.2f}")
+            parts.append(f"累计消费: ￥{metadata['total_spent']:.2f}")
 
         return "\n".join(parts) if len(parts) > 1 else ""
 
@@ -809,13 +842,20 @@ class ContextRAGFusionLayer:
         return "\n".join(parts)
 
     def _calculate_context_strength(self, context: SessionContext) -> float:
-        """
-        计算上下文强度
-
-        Returns:
-            0-1之间的上下文强度分数
-        """
+        """Calculate context strength with three-tier signals when available."""
         score = 0.0
+
+        if hasattr(context, "get_three_tier_context"):
+            tier_context = context.get_three_tier_context()
+            stats = tier_context.get("stats", {})
+            if stats.get("short_term_turns", 0) > 3:
+                score += 0.3
+            if stats.get("compressed_memories", 0) > 0:
+                score += 0.2
+            if tier_context.get("long_term_text"):
+                score += 0.2
+            if tier_context.get("intent_continuity"):
+                score += 0.1
 
         if len(context.turn_history) > 3:
             score += 0.3
