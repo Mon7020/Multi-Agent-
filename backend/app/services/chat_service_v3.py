@@ -99,12 +99,18 @@ class ChatServiceV3:
                 return
 
             loaded_count = 0
-            for filename in os.listdir(docs_dir):
+            for filename in sorted(os.listdir(docs_dir)):
                 if not filename.endswith((".txt", ".pdf", ".docx")):
                     continue
 
                 file_path = os.path.join(docs_dir, filename)
                 try:
+                    # Avoid duplicate chunks across restarts by replacing existing chunks per source file.
+                    try:
+                        self.rag_tool.delete_documents_by_source(file_path)
+                    except Exception as cleanup_error:
+                        print(f"[WARN] failed to cleanup old chunks for {filename}: {cleanup_error}")
+
                     documents = self.rag_tool.load_document(file_path)
                     if documents:
                         self.rag_tool.add_documents_to_vector_db(documents)

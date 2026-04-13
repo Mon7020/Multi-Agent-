@@ -340,6 +340,15 @@ function formatDate(dateStr) {
   return new Date(dateStr).toLocaleDateString('zh-CN')
 }
 
+function getRateClass(value) {
+  if (!value) return ''
+  const parsed = typeof value === 'string' ? parseFloat(value) : Number(value)
+  if (Number.isNaN(parsed)) return ''
+  if (parsed >= 80 || parsed >= 0.8) return 'success'
+  if (parsed >= 50 || parsed >= 0.5) return 'warning'
+  return 'error'
+}
+
 onMounted(() => {
   loadDocuments()
   loadStats()

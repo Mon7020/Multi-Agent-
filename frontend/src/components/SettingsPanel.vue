@@ -87,7 +87,7 @@
       <div class="info-grid">
         <div class="info-item">
           <span class="info-label">后端状态</span>
-          <span class="info-value" :class="healthStatus === 'ok' ? 'success' : 'error'">
+          <span class="info-value" :class="['healthy', 'ok'].includes(healthStatus) ? 'success' : 'error'">
             {{ healthStatus }}
           </span>
         </div>

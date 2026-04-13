@@ -4,7 +4,7 @@ import json
 import threading
 from typing import Any, AsyncIterator, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query, WebSocket
+from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 
 from app.schemas import ChatMessage, ChatRequest, ChatResponse
@@ -212,45 +212,65 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
             {"type": "greeting", "content": greeting_message, "is_greeting": True},
         )
 
-        data = await websocket.receive_text()
-        message_data = json.loads(data)
+        connection_user_id = _normalize_user_id(websocket.query_params.get("user_id"))
 
-        message = (message_data.get("message") or "").strip()
-        history = message_data.get("history", [])
-        user_id = _normalize_user_id(message_data.get("user_id") or websocket.query_params.get("user_id"))
+        while True:
+            try:
+                data = await websocket.receive_text()
+            except WebSocketDisconnect:
+                break
 
-        if not user_id:
-            await manager.send_message(session_id, {"type": "error", "content": "user_id is required"})
-            return
+            try:
+                message_data = json.loads(data)
+            except json.JSONDecodeError:
+                await manager.send_message(session_id, {"type": "error", "content": "invalid JSON"})
+                continue
 
-        if not message or len(message) > _MAX_MESSAGE_LEN:
-            await manager.send_message(session_id, {"type": "error", "content": "message invalid"})
-            return
+            message = (message_data.get("message") or "").strip()
+            history = message_data.get("history", [])
+            user_id = _normalize_user_id(message_data.get("user_id") or connection_user_id)
 
-        await manager.send_message(session_id, {"type": "status", "content": "thinking..."})
+            if not user_id:
+                await manager.send_message(session_id, {"type": "error", "content": "user_id is required"})
+                continue
 
-        async for chunk in _iter_stream_chunks(
-            session_id=session_id,
-            user_id=user_id,
-            message=message,
-            history=history,
-        ):
-            await manager.send_message(
-                session_id,
-                {
-                    "type": "chunk",
-                    "content": chunk.get("content", ""),
-                    "done": chunk.get("done", False),
-                    "meta": chunk.get("meta"),
-                },
-            )
+            if connection_user_id and user_id != connection_user_id:
+                await manager.send_message(session_id, {"type": "error", "content": "user_id mismatch"})
+                continue
 
-        await manager.send_message(session_id, {"type": "done", "content": ""})
+            if not connection_user_id:
+                connection_user_id = user_id
+
+            if not message or len(message) > _MAX_MESSAGE_LEN:
+                await manager.send_message(session_id, {"type": "error", "content": "message invalid"})
+                continue
+
+            await manager.send_message(session_id, {"type": "status", "content": "thinking..."})
+
+            try:
+                async for chunk in _iter_stream_chunks(
+                    session_id=session_id,
+                    user_id=user_id,
+                    message=message,
+                    history=history,
+                ):
+                    await manager.send_message(
+                        session_id,
+                        {
+                            "type": "chunk",
+                            "content": chunk.get("content", ""),
+                            "done": chunk.get("done", False),
+                            "meta": chunk.get("meta"),
+                        },
+                    )
+                await manager.send_message(session_id, {"type": "done", "content": ""})
+            except PermissionError as exc:
+                await manager.send_message(session_id, {"type": "error", "content": str(exc)})
+            except Exception as exc:
+                await manager.send_message(session_id, {"type": "error", "content": f"process failed: {str(exc)}"})
 
     except PermissionError as exc:
         await manager.send_message(session_id, {"type": "error", "content": str(exc)})
-    except json.JSONDecodeError:
-        await manager.send_message(session_id, {"type": "error", "content": "invalid JSON"})
     except Exception as exc:
         await manager.send_message(session_id, {"type": "error", "content": f"process failed: {str(exc)}"})
     finally:
