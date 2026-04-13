@@ -1,33 +1,29 @@
 <template>
   <div class="app-container">
     <header class="app-header">
-      <div class="header-left">
-        <h1>智能客服</h1>
-        <span class="header-subtitle">基于 RAG 的智能问答系统</span>
+      <div class="header-brand">
+        <svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+        </svg>
+        <h1>智能客服系统</h1>
       </div>
-      <nav class="header-nav">
+      <nav class="tabs">
         <button
           v-for="tab in tabs"
-          :key="tab.id"
-          :class="['nav-item', { active: activeTab === tab.id }]"
-          @click="activeTab = tab.id"
+          :key="tab.key"
+          :class="{ active: activeTab === tab.key }"
+          @click="activeTab = tab.key"
         >
-          <span class="nav-icon" v-html="tab.icon"></span>
-          <span class="nav-label">{{ tab.label }}</span>
+          <span class="tab-icon" v-html="tab.icon"></span>
+          {{ tab.label }}
         </button>
       </nav>
     </header>
 
     <main class="app-main">
-      <div v-show="activeTab === 'chat'" class="tab-content">
-        <ChatPanel />
-      </div>
-      <div v-show="activeTab === 'knowledge'" class="tab-content">
-        <KnowledgeBasePanel />
-      </div>
-      <div v-show="activeTab === 'settings'" class="tab-content">
-        <SettingsPanel />
-      </div>
+      <ChatPanel v-if="activeTab === 'chat'" />
+      <KnowledgeBasePanel v-else-if="activeTab === 'knowledge'" />
+      <SettingsPanel v-else />
     </main>
   </div>
 </template>
@@ -42,19 +38,19 @@ const activeTab = ref('chat')
 
 const tabs = [
   {
-    id: 'chat',
+    key: 'chat',
     label: '对话',
-    icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>'
+    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>'
   },
   {
-    id: 'knowledge',
+    key: 'knowledge',
     label: '知识库',
-    icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>'
+    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>'
   },
   {
-    id: 'settings',
+    key: 'settings',
     label: '设置',
-    icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>'
+    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4m0 14v4m-7.07-2.93l2.83-2.83m8.48-8.48l2.83-2.83M1 12h4m14 0h4m-2.93 7.07l-2.83-2.83M6.34 6.34L3.51 3.51"/></svg>'
   }
 ]
 </script>
@@ -63,80 +59,101 @@ const tabs = [
 .app-container {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  min-height: 100vh;
   background: var(--bg);
 }
 
 .app-header {
   display: flex;
-  align-items: center;
   justify-content: space-between;
-  padding: 0 32px;
-  height: 64px;
+  align-items: center;
+  height: 56px;
+  padding: 0 24px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 100;
 }
 
-.header-left {
+.header-brand {
   display: flex;
-  align-items: baseline;
-  gap: 12px;
+  align-items: center;
+  gap: 10px;
 }
 
-.header-left h1 {
-  font-size: 18px;
+.brand-icon {
+  width: 22px;
+  height: 22px;
+  color: var(--accent);
+}
+
+.header-brand h1 {
+  margin: 0;
+  font-size: 17px;
   font-weight: 600;
   color: var(--text-primary);
 }
 
-.header-subtitle {
-  font-size: 13px;
-  color: var(--text-muted);
-}
-
-.header-nav {
+.tabs {
   display: flex;
   gap: 4px;
 }
 
-.nav-item {
+.tabs button {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 16px;
-  background: transparent;
+  padding: 6px 16px;
   border: none;
-  border-radius: var(--radius);
-  color: var(--text-secondary);
+  background: transparent;
+  border-radius: 8px;
   font-size: 14px;
-  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
   transition: all var(--transition);
+  position: relative;
 }
 
-.nav-item:hover {
-  background: var(--border-light);
+.tabs button:hover {
   color: var(--text-primary);
+  background: var(--border-light);
 }
 
-.nav-item.active {
+.tabs button.active {
+  color: var(--accent);
+  background: var(--accent-light);
+  font-weight: 500;
+}
+
+.tabs button.active::after {
+  content: '';
+  position: absolute;
+  bottom: -1px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 20px;
+  height: 2px;
   background: var(--accent);
-  color: white;
+  border-radius: 1px;
 }
 
-.nav-icon {
+.tab-icon {
   display: flex;
-  align-items: center;
-  justify-content: center;
+  width: 16px;
+  height: 16px;
+}
+
+.tab-icon :deep(svg) {
+  width: 100%;
+  height: 100%;
 }
 
 .app-main {
   flex: 1;
-  overflow: hidden;
-}
-
-.tab-content {
-  height: 100%;
-  overflow: auto;
   padding: 24px;
+  max-width: 1400px;
+  width: 100%;
+  margin: 0 auto;
 }
 </style>
