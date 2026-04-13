@@ -82,11 +82,4 @@ npm run dev
 
 默认地址：`http://localhost:5173`
 
-## 关键安全与架构说明
 
-- `/skills` 已修复为从 `skills.manager` 注入，不再依赖不存在模块。
-- 前端 `v-html` 渲染前会做 HTML 转义，避免 XSS。
-- Chat 接口引入 `user_id` 授权校验，防止仅凭 `session_id` 越权。
-- Service 层通过 `backend/app/services/rag_runtime.py` 访问 RAG 运行时对象，去除 API 层反向依赖。
-- Chat 服务重计算逻辑已迁移到线程池执行，避免阻塞 async 主链路。
-- ChatServiceV3 已改为懒加载，避免模块导入即重初始化与重入库。
