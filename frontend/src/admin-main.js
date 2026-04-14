@@ -1,5 +1,9 @@
-import { createApp } from 'vue'
+﻿import { createApp } from 'vue'
 import AdminApp from './AdminApp.vue'
+import router from './admin/router.js'
 import './style.css'
 
-createApp(AdminApp).mount('#admin-app')
+const app = createApp(AdminApp)
+
+app.use(router)
+app.mount('#admin-app')

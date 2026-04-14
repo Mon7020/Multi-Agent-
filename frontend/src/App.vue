@@ -82,6 +82,8 @@ onMounted(async () => {
     authUser.value = {
       user_id: res.data.user_id,
       username: res.data.username,
+      role: res.data.role,
+      status: res.data.status,
       expires_at: res.data.expires_at,
     }
   } catch {
