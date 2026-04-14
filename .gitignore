@@ -101,7 +101,10 @@ data/auth/users.json
 # ============================================
 # 8. 不上传的目录
 # ============================================
-tests/
+.worktrees/
+tests/*
+!tests/admin/
+!tests/admin/**
 mianshi/
 evaluation/
 monitoring/
