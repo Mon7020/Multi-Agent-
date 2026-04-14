@@ -333,6 +333,28 @@ class AuthService:
             raise AuthError("user not found")
         return user
 
+    def list_users(self) -> list[Dict[str, Any]]:
+        placeholder = self._db_config.get("placeholder", "?")
+        sql = f"""
+            SELECT id, username, created_at, status, role, last_login_at, password_updated_at, updated_at
+            FROM users
+            ORDER BY created_at ASC, username ASC
+            """
+
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                if self._db_type == "sqlite":
+                    rows = conn.execute(sql).fetchall()
+                else:
+                    with conn.cursor() as cursor:
+                        cursor.execute(sql)
+                        rows = cursor.fetchall()
+            finally:
+                conn.close()
+
+        return [dict(row) for row in rows]
+
     def authenticate(self, username: str, password: str) -> Dict[str, Any]:
         normalized = self._normalize_username(username)
         with self._lock:
