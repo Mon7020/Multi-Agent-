@@ -82,6 +82,8 @@ async def me(authorization: Optional[str] = Header(default=None)):
     return {
         "user_id": user["id"],
         "username": user["username"],
+        "role": user["role"],
+        "status": user["status"],
         "expires_at": user["exp"],
     }
 
