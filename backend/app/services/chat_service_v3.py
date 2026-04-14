@@ -142,7 +142,7 @@ class ChatServiceV3:
             self._validate_session_access(None, user_id or "")
             await self._ensure_documents_loaded_async()
 
-            context = self.session_manager.get_session(session_id)
+            context = self.session_manager.get_session(session_id, user_id=user_id)
             self._validate_session_access(context, user_id or "")
 
             is_new_session = False
@@ -419,7 +419,7 @@ class ChatServiceV3:
         return min(score, 1.0)
 
     def get_session_history(self, session_id: str, user_id: Optional[str] = None) -> List[Dict[str, str]]:
-        context = self.session_manager.get_session(session_id)
+        context = self.session_manager.get_session(session_id, user_id=user_id)
         if context is None:
             return []
         if not user_id:
@@ -429,12 +429,12 @@ class ChatServiceV3:
         return [{"role": t.role, "content": t.content} for t in context.turn_history]
 
     def clear_session(self, session_id: str, user_id: Optional[str] = None) -> bool:
-        context = self.session_manager.get_session(session_id)
+        context = self.session_manager.get_session(session_id, user_id=user_id)
         if not user_id:
             raise ValueError("user_id is required")
         if context and context.user_id != user_id:
             raise PermissionError("session access denied for current user")
-        return self.session_manager.delete_session(session_id)
+        return self.session_manager.delete_session(session_id, user_id=user_id, remove_persisted=True)
 
     def get_fusion_stats(self) -> Dict[str, Any]:
         return {

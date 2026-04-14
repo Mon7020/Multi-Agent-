@@ -95,6 +95,8 @@ debug_output.txt
 # ============================================
 # 用户个人配置文件（如果包含隐私数据）
 data/memory/long_term/*_profile.json
+data/memory/session_context/*_context.json
+data/auth/users.json
 
 # ============================================
 # 8. 不上传的目录

@@ -1,5 +1,7 @@
-<template>
-  <div class="app-container">
+﻿<template>
+  <AuthPanel v-if="!authUser" @authenticated="onAuthenticated" />
+
+  <div v-else class="app-container">
     <header class="app-header">
       <div class="header-brand">
         <svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -7,6 +9,7 @@
         </svg>
         <h1>智能客服系统</h1>
       </div>
+
       <nav class="tabs">
         <button
           v-for="tab in tabs"
@@ -18,23 +21,31 @@
           {{ tab.label }}
         </button>
       </nav>
+
+      <div class="user-box">
+        <span class="user-name">{{ authUser.username }}</span>
+        <button class="logout-btn" @click="logout">退出</button>
+      </div>
     </header>
 
     <main class="app-main">
-      <ChatPanel v-if="activeTab === 'chat'" />
-      <KnowledgeBasePanel v-else-if="activeTab === 'knowledge'" />
-      <SettingsPanel v-else />
+      <ChatPanel v-show="activeTab === 'chat'" />
+      <KnowledgeBasePanel v-show="activeTab === 'knowledge'" />
+      <SettingsPanel v-show="activeTab === 'settings'" />
     </main>
   </div>
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
+import AuthPanel from './components/AuthPanel.vue'
 import ChatPanel from './components/ChatPanel.vue'
 import KnowledgeBasePanel from './components/KnowledgeBasePanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
+import { authApi, clearAuthSession, getAuthUser } from './api/index.js'
 
 const activeTab = ref('chat')
+const authUser = ref(getAuthUser())
 
 const tabs = [
   {
@@ -53,6 +64,31 @@ const tabs = [
     icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v4m0 14v4m-7.07-2.93l2.83-2.83m8.48-8.48l2.83-2.83M1 12h4m14 0h4m-2.93 7.07l-2.83-2.83M6.34 6.34L3.51 3.51"/></svg>'
   }
 ]
+
+function onAuthenticated(user) {
+  authUser.value = user
+}
+
+function logout() {
+  clearAuthSession()
+  authUser.value = null
+  activeTab.value = 'chat'
+}
+
+onMounted(async () => {
+  if (!authUser.value) return
+  try {
+    const res = await authApi.me()
+    authUser.value = {
+      user_id: res.data.user_id,
+      username: res.data.username,
+      expires_at: res.data.expires_at,
+    }
+  } catch {
+    clearAuthSession()
+    authUser.value = null
+  }
+})
 </script>
 
 <style scoped>
@@ -74,6 +110,7 @@ const tabs = [
   position: sticky;
   top: 0;
   z-index: 100;
+  gap: 16px;
 }
 
 .header-brand {
@@ -147,6 +184,30 @@ const tabs = [
 .tab-icon :deep(svg) {
   width: 100%;
   height: 100%;
+}
+
+.user-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.user-name {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.logout-btn {
+  border: 1px solid var(--border);
+  background: transparent;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.logout-btn:hover {
+  border-color: var(--error);
+  color: var(--error);
 }
 
 .app-main {

@@ -79,6 +79,18 @@ class APISettings(BaseSettings):
         return self.openai_api_key
 
 
+
+class DatabaseSettings(BaseSettings):
+    """鏁版嵁搴撴璁℃帴鍙ｆ鏌?"""
+
+    database_url: str = Field(default="sqlite:///data/auth/app.db", description="鏁版嵁搴撴連鍙ｇ洃鍚?URL锛岄粯璁や娇鐢ㄥ唴缃繚瀛樼殑SQLite")
+    database_echo: bool = Field(default=False, description="鏄惁鎵撳嵃SQL璋冩暣鏃ュ織")
+
+    class Config:
+        env_prefix = ""
+        case_sensitive = False
+
+
 class RedisSettings(BaseSettings):
     """Redis缓存配置"""
     
@@ -149,6 +161,7 @@ class Settings:
             try:
                 self.api = APISettings()
                 self.redis = RedisSettings()
+                self.database = DatabaseSettings()
                 self.app = AppSettings()
                 self.vector_db = VectorDBSettings()
                 self.rag = RAGSettings()
@@ -231,6 +244,15 @@ class Settings:
     @property
     def redis_password(self) -> Optional[str]:
         return self.redis.redis_password
+
+    # 数据库相关
+    @property
+    def database_url(self) -> str:
+        return self.database.database_url
+
+    @property
+    def database_echo(self) -> bool:
+        return bool(self.database.database_echo)
 
     # 向量数据库相关
     @property

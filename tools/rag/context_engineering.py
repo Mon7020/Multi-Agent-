@@ -91,15 +91,20 @@ class CompressedMemory:
 
 @dataclass
 class UserProfile:
-    """用户画像（长期记忆）"""
+    """??????????"""
     user_id: str
     preferences: Dict[str, Any] = field(default_factory=dict)
+    # key -> {"source": str, "confidence": float, "updated_at": str}
+    preference_meta: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    # append-only history for preference updates
+    preference_history: List[Dict[str, Any]] = field(default_factory=list)
+    # conflict records when new value differs from old value
+    preference_conflicts: List[Dict[str, Any]] = field(default_factory=list)
     interaction_history: List[str] = field(default_factory=list)
     discussed_entities: Dict[str, List[str]] = field(default_factory=dict)  # entity -> topics
     satisfaction_scores: List[float] = field(default_factory=list)
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     last_updated: str = field(default_factory=lambda: datetime.now().isoformat())
-
 
 class ShortTermMemoryManager:
     """
@@ -492,6 +497,12 @@ class LongTermMemoryManager:
             if os.path.exists(path):
                 with open(path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
+                    if "preference_meta" not in data:
+                        data["preference_meta"] = {}
+                    if "preference_history" not in data:
+                        data["preference_history"] = []
+                    if "preference_conflicts" not in data:
+                        data["preference_conflicts"] = []
                     return UserProfile(**data)
         except Exception as e:
             logger.warning(f"[LongTermMemory] 加载失败 {user_id}: {e}")
@@ -514,6 +525,9 @@ class LongTermMemoryManager:
                         {
                             "user_id": profile.user_id,
                             "preferences": profile.preferences,
+                            "preference_meta": profile.preference_meta,
+                            "preference_history": profile.preference_history[-200:],
+                            "preference_conflicts": profile.preference_conflicts[-200:],
                             "interaction_history": profile.interaction_history[-50:],
                             "discussed_entities": profile.discussed_entities,
                             "satisfaction_scores": profile.satisfaction_scores[-20:],
@@ -531,12 +545,83 @@ class LongTermMemoryManager:
             except Exception as e:
                 logger.error(f"[LongTermMemory] 保存失败 {user_id}: {e}")
                 return False
-
-    def update_preference(self, user_id: str, key: str, value: Any):
-        """更新用户偏好"""
+    def update_preference(
+        self,
+        user_id: str,
+        key: str,
+        value: Any,
+        source: str = "system_inferred",
+        confidence: float = 0.6,
+    ):
+        """?????????????"""
         profile = self.get_or_create_profile(user_id)
-        profile.preferences[key] = value
-        logger.debug(f"[LongTermMemory] 偏好更新: {user_id}.{key}={value}")
+        now = datetime.now().isoformat()
+
+        source_priority = {
+            "explicit_user": 3,
+            "authenticated_profile_sync": 2,
+            "system_inferred": 1,
+        }
+
+        old_value = profile.preferences.get(key)
+        old_meta = profile.preference_meta.get(key, {})
+        old_source = old_meta.get("source", "system_inferred")
+        old_confidence = float(old_meta.get("confidence", 0.0))
+
+        history_entry = {
+            "key": key,
+            "value": value,
+            "source": source,
+            "confidence": confidence,
+            "timestamp": now,
+        }
+        profile.preference_history.append(history_entry)
+        if len(profile.preference_history) > 500:
+            profile.preference_history = profile.preference_history[-500:]
+
+        should_replace = False
+        if old_value is None:
+            should_replace = True
+        elif old_value == value:
+            should_replace = True
+        else:
+            conflict_record = {
+                "key": key,
+                "old_value": old_value,
+                "new_value": value,
+                "old_source": old_source,
+                "new_source": source,
+                "old_confidence": old_confidence,
+                "new_confidence": confidence,
+                "timestamp": now,
+            }
+            profile.preference_conflicts.append(conflict_record)
+            if len(profile.preference_conflicts) > 500:
+                profile.preference_conflicts = profile.preference_conflicts[-500:]
+
+            new_priority = source_priority.get(source, 0)
+            old_priority = source_priority.get(old_source, 0)
+            if new_priority > old_priority:
+                should_replace = True
+            elif new_priority == old_priority and confidence >= old_confidence:
+                should_replace = True
+
+        if should_replace:
+            profile.preferences[key] = value
+            profile.preference_meta[key] = {
+                "source": source,
+                "confidence": confidence,
+                "updated_at": now,
+            }
+            logger.debug(
+                f"[LongTermMemory] preference updated: {user_id}.{key}={value} "
+                f"(source={source}, confidence={confidence})"
+            )
+        else:
+            logger.debug(
+                f"[LongTermMemory] preference kept old value: {user_id}.{key} "
+                f"(old_source={old_source}, new_source={source})"
+            )
 
     def get_preference(self, user_id: str, key: str, default: Any = None) -> Any:
         """获取用户偏好"""

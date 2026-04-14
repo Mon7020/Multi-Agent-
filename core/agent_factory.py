@@ -78,24 +78,30 @@ class AgentFactory:
     def _initialize_tools(self) -> None:
         """初始化全局工具列表"""
         try:
-            from tools.amap_weather_tool import weather_tool
-            from tools.tavily_search_tool import search_tool
+            from tools.amap_weather_tool import WeatherQuery, weather_tool
+            from tools.tavily_search_tool import TavilySearchInput, search_tool
             from tools.rag_tool import rag_tool, RAGQueryInput
 
             # 天气工具
+            def weather_wrapper(city_name: str) -> str:
+                return weather_tool._run(city_name=city_name)
+
             self._tools.append(StructuredTool(
                 name=weather_tool.name,
-                func=weather_tool.run,
+                func=weather_wrapper,
                 description=weather_tool.description,
-                args_schema=type('WeatherInput', (), {'query': str})
+                args_schema=WeatherQuery
             ))
 
             # 搜索工具
+            def search_wrapper(query: str, max_results: int = 5) -> str:
+                return search_tool.search_and_format(query=query, max_results=max_results)
+
             self._tools.append(StructuredTool(
                 name=search_tool.name,
-                func=search_tool.search_and_format,
+                func=search_wrapper,
                 description=search_tool.description,
-                args_schema=type('SearchInput', (), {'query': str})
+                args_schema=TavilySearchInput
             ))
 
             # RAG 工具（包装）
@@ -115,10 +121,7 @@ class AgentFactory:
                 name="knowledge_base_query",
                 func=rag_wrapper,
                 description="查询产品知识库，获取产品价格、功能、规格等信息。首选工具！",
-                args_schema=type('RAGInput', (), {
-                    'query': str,
-                    'top_k': int
-                })
+                args_schema=RAGQueryInput
             ))
 
             logger.info(f"[AgentFactory] 工具初始化完成，共 {len(self._tools)} 个工具")

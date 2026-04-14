@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 
-from app.api.v1 import chat, skills, health, knowledge_base, evaluation, metrics
+from app.api.v1 import auth, chat, skills, health, knowledge_base, evaluation, metrics
 from app.config import settings
 
 # 初始化日志系统
@@ -48,6 +48,7 @@ app.add_middleware(
 )
 
 app.include_router(chat.router, prefix="/api/v1")
+app.include_router(auth.router, prefix="/api/v1")
 app.include_router(skills.router, prefix="/api/v1")
 app.include_router(health.router, prefix="/api/v1")
 app.include_router(knowledge_base.router, prefix="/api/v1")

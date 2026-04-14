@@ -4,10 +4,11 @@ import json
 import threading
 from typing import Any, AsyncIterator, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 
 from app.schemas import ChatMessage, ChatRequest, ChatResponse
+from app.services.auth_service import AuthError, auth_service
 from app.services.chat_service_v3 import chat_service_v3 as chat_service
 
 router = APIRouter()
@@ -49,11 +50,41 @@ def _normalize_user_id(value: Optional[str]) -> Optional[str]:
     return value or None
 
 
-def _require_user_id(value: Optional[str]) -> str:
-    user_id = _normalize_user_id(value)
+def _resolve_authenticated_user_id(
+    authorization: Optional[str],
+    requested_user_id: Optional[str] = None,
+) -> str:
+    try:
+        user = auth_service.get_user_from_authorization(authorization)
+    except AuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    user_id = _normalize_user_id(user.get("id"))
     if not user_id:
-        raise HTTPException(status_code=401, detail="user_id is required")
+        raise HTTPException(status_code=401, detail="invalid token user")
+
+    req_uid = _normalize_user_id(requested_user_id)
+    if req_uid and req_uid != user_id:
+        raise HTTPException(status_code=403, detail="token user_id mismatch")
+
     return user_id
+
+
+def _resolve_ws_user_id(
+    websocket: WebSocket,
+    message_token: Optional[str] = None,
+    requested_user_id: Optional[str] = None,
+) -> str:
+    raw_auth = websocket.headers.get("authorization")
+    raw_query_token = websocket.query_params.get("token")
+
+    if raw_query_token:
+        raw_auth = f"Bearer {raw_query_token}"
+
+    if message_token:
+        raw_auth = f"Bearer {message_token}"
+
+    return _resolve_authenticated_user_id(raw_auth, requested_user_id=requested_user_id)
 
 
 async def _iter_stream_chunks(
@@ -87,14 +118,14 @@ async def _iter_stream_chunks(
 
 
 @router.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
+async def chat(request: ChatRequest, authorization: Optional[str] = Header(default=None)):
     if not request.session_id or len(request.session_id) > _MAX_SESSION_ID_LEN:
         raise HTTPException(status_code=400, detail="session_id invalid")
 
     if not request.message or len(request.message) > _MAX_MESSAGE_LEN:
         raise HTTPException(status_code=400, detail="message invalid")
 
-    user_id = _require_user_id(request.user_id)
+    user_id = _resolve_authenticated_user_id(authorization, requested_user_id=request.user_id)
 
     try:
         history_dict = [h.model_dump() for h in request.history] if request.history else []
@@ -116,14 +147,14 @@ async def chat(request: ChatRequest):
 
 
 @router.post("/chat/stream")
-async def stream_chat(request: ChatRequest):
+async def stream_chat(request: ChatRequest, authorization: Optional[str] = Header(default=None)):
     if not request.session_id or len(request.session_id) > _MAX_SESSION_ID_LEN:
         raise HTTPException(status_code=400, detail="session_id invalid")
 
     if not request.message or len(request.message) > _MAX_MESSAGE_LEN:
         raise HTTPException(status_code=400, detail="message invalid")
 
-    user_id = _require_user_id(request.user_id)
+    user_id = _resolve_authenticated_user_id(authorization, requested_user_id=request.user_id)
 
     async def generate():
         try:
@@ -155,14 +186,18 @@ async def stream_chat(request: ChatRequest):
 
 
 @router.get("/chat/history/{session_id}")
-async def get_history(session_id: str, user_id: str = Query(..., min_length=1)):
+async def get_history(
+    session_id: str,
+    authorization: Optional[str] = Header(default=None),
+    user_id: Optional[str] = Query(default=None),
+):
     if not session_id or len(session_id) > _MAX_SESSION_ID_LEN:
         raise HTTPException(status_code=400, detail="session_id invalid")
 
-    user_id = _require_user_id(user_id)
+    auth_user_id = _resolve_authenticated_user_id(authorization, requested_user_id=user_id)
 
     try:
-        history = chat_service.get_session_history(session_id, user_id=user_id)
+        history = chat_service.get_session_history(session_id, user_id=auth_user_id)
         messages = [ChatMessage(role=msg["role"], content=msg["content"]) for msg in history]
         return {"session_id": session_id, "messages": messages, "count": len(messages)}
     except PermissionError as exc:
@@ -174,14 +209,18 @@ async def get_history(session_id: str, user_id: str = Query(..., min_length=1)):
 
 
 @router.delete("/chat/history/{session_id}")
-async def clear_history(session_id: str, user_id: str = Query(..., min_length=1)):
+async def clear_history(
+    session_id: str,
+    authorization: Optional[str] = Header(default=None),
+    user_id: Optional[str] = Query(default=None),
+):
     if not session_id or len(session_id) > _MAX_SESSION_ID_LEN:
         raise HTTPException(status_code=400, detail="session_id invalid")
 
-    user_id = _require_user_id(user_id)
+    auth_user_id = _resolve_authenticated_user_id(authorization, requested_user_id=user_id)
 
     try:
-        success = chat_service.clear_session(session_id, user_id=user_id)
+        success = chat_service.clear_session(session_id, user_id=auth_user_id)
         if success:
             return {"message": "history cleared", "session_id": session_id}
         return {"message": "session not found", "session_id": session_id}
@@ -212,7 +251,7 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
             {"type": "greeting", "content": greeting_message, "is_greeting": True},
         )
 
-        connection_user_id = _normalize_user_id(websocket.query_params.get("user_id"))
+        connection_user_id: Optional[str] = None
 
         while True:
             try:
@@ -228,18 +267,23 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
 
             message = (message_data.get("message") or "").strip()
             history = message_data.get("history", [])
-            user_id = _normalize_user_id(message_data.get("user_id") or connection_user_id)
+            message_user_id = _normalize_user_id(message_data.get("user_id"))
+            message_token = (message_data.get("token") or "").strip() or None
 
-            if not user_id:
-                await manager.send_message(session_id, {"type": "error", "content": "user_id is required"})
+            try:
+                resolved_user_id = _resolve_ws_user_id(
+                    websocket,
+                    message_token=message_token,
+                    requested_user_id=message_user_id,
+                )
+            except HTTPException as exc:
+                await manager.send_message(session_id, {"type": "error", "content": str(exc.detail)})
                 continue
 
-            if connection_user_id and user_id != connection_user_id:
+            if connection_user_id and resolved_user_id != connection_user_id:
                 await manager.send_message(session_id, {"type": "error", "content": "user_id mismatch"})
                 continue
-
-            if not connection_user_id:
-                connection_user_id = user_id
+            connection_user_id = resolved_user_id
 
             if not message or len(message) > _MAX_MESSAGE_LEN:
                 await manager.send_message(session_id, {"type": "error", "content": "message invalid"})
@@ -250,7 +294,7 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
             try:
                 async for chunk in _iter_stream_chunks(
                     session_id=session_id,
-                    user_id=user_id,
+                    user_id=connection_user_id,
                     message=message,
                     history=history,
                 ):
@@ -269,8 +313,6 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
             except Exception as exc:
                 await manager.send_message(session_id, {"type": "error", "content": f"process failed: {str(exc)}"})
 
-    except PermissionError as exc:
-        await manager.send_message(session_id, {"type": "error", "content": str(exc)})
     except Exception as exc:
         await manager.send_message(session_id, {"type": "error", "content": f"process failed: {str(exc)}"})
     finally:

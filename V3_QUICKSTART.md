@@ -1,311 +1,143 @@
-# ChatServiceV3 快速入门指南
+# ChatService V3 快速启动
 
-## 🚀 快速开始
+本文档面向“先跑起来再说”的场景，按当前仓库实际结构整理，覆盖用户前台、记忆管理后台，以及最新的中文化管理页面。
 
-### 1. 环境准备
+## 1. 环境准备
+
+在项目根目录 `test2langchain` 执行：
 
 ```bash
-# 激活虚拟环境
+conda create -n test3 python=3.10 -y
 conda activate test3
-
-# 安装依赖
-cd projects/test2langchain
-pip install -r backend/requirements.txt
-
-# 配置环境变量
-cp .env.example .env
-# 编辑 .env 文件，填入你的 API Key
+pip install -r requirements.txt -r backend/requirements.txt
 ```
 
-### 2. 启动服务
+如果还没有 `.env`，先复制：
+
+```bash
+# Windows PowerShell
+Copy-Item .env.example .env
+
+# Linux / macOS
+cp .env.example .env
+```
+
+至少确认这些变量已经填写：
+
+- `OPENAI_API_KEY`
+- `DEEPSEEK_API_KEY`
+- `AMAP_API_KEY`
+- `TAVILY_API_KEY`
+- `DATABASE_URL`
+
+默认数据库：
+
+```env
+DATABASE_URL=sqlite:///data/auth/app.db
+```
+
+## 2. 启动后端
+
+推荐在项目根目录执行：
+
+```bash
+python backend/run_backends.py
+```
+
+也可以在 `backend` 目录执行：
 
 ```bash
 cd backend
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+python run_backends.py
 ```
 
-### 3. 访问 API 文档
+启动成功后可访问：
 
-打开浏览器访问: **http://localhost:8000/docs**
+- 用户 API 文档：`http://localhost:8000/docs`
+- 用户健康检查：`http://localhost:8000/api/v1/health`
+- 管理 API 文档：`http://localhost:8001/docs`
+- 管理健康检查：`http://localhost:8001/health`
 
----
+## 3. 启动用户前台
 
-## 📡 API 使用
-
-### 基本调用
+新开一个终端窗口：
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/chat" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "session_id": "user_001",
-    "message": "X12投影仪多少钱？",
-    "history": []
-  }'
+cd frontend
+npm install
+npm run dev
 ```
 
-### 响应示例
+用户前台地址：`http://localhost:5173`
 
-```json
-{
-  "session_id": "user_001",
-  "message": "为您推荐X12智能投影仪，价格2999元...",
-  "intent": "price_inquiry",
-  "customer_type": "price_sensitive",
-  "skills_used": ["customer_classifier", "sales_agent"],
-  "retrieved_count": 2,
-  "has_relevant_info": true,
-  "fusion_info": {
-    "enabled": true,
-    "quality": "high",
-    "strategy": "hybrid",
-    "confidence": 0.85,
-    "context_strength": 0.7
-  },
-  "context_summary": {
-    "session_id": "user_001",
-    "turn_count": 3,
-    "customer_type": "price_sensitive",
-    "current_product": "智能投影仪"
-  }
-}
-```
+## 4. 启动记忆管理后台前端
 
----
-
-## 🎯 V3 核心特性
-
-### 1. 检索质量评估
-
-| 质量等级 | 说明 | 触发策略 |
-|---------|------|---------|
-| **HIGH** | 检索到高质量文档 | HYBRID / RAG_PRIMARY |
-| **MEDIUM** | 检索结果一般 | HYBRID |
-| **LOW** | 检索结果相关性低 | CONTEXT_PRIMARY |
-| **NONE** | 未检索到文档 | CONTEXT_ONLY |
-
-### 2. 融合策略
-
-| 策略 | 使用场景 |
-|------|---------|
-| **HYBRID** | 检索质量高 + 上下文强 |
-| **RAG_PRIMARY** | 检索质量高 + 上下文弱 |
-| **CONTEXT_PRIMARY** | 检索质量低 |
-| **CONTEXT_ONLY** | 简单对话（问候/告别）|
-
-### 3. 双向信息流
-
-```
-用户输入
-    ↓
-[ContextExtractor] → 从SessionContext提取metadata和skill_context
-    ↓
-[增强查询] → 加入客户类型、产品偏好、实体信息
-    ↓
-[RAG检索层] → 使用增强查询执行检索
-    ↓
-[RAGResultInjector] → 评估质量 + 提取实体 + 注入到metadata
-    ↓
-[AdaptiveFusionEngine] → 根据质量选择融合策略
-    ↓
-[融合上下文] → RAG结果、短期记忆、Skill上下文、中期记忆、长期记忆
-    ↓
-[LLM生成]
-```
-
----
-
-## 🔍 调试和监控
-
-### 查看融合信息
-
-在 `/api/v1/chat` 响应中，检查 `fusion_info` 字段：
-
-```python
-{
-    "fusion_info": {
-        "enabled": true,              # 是否启用融合
-        "quality": "high",           # 检索质量
-        "strategy": "hybrid",         # 当前融合策略
-        "confidence": 0.85,          # 综合置信度
-        "context_strength": 0.7      # 上下文强度
-    }
-}
-```
-
-### 融合日志
-
-启动服务时查看日志输出：
-
-```
-[FUSION] 开始Context+RAG融合处理
-[FUSION] 融合结果摘要:
-   检索质量: high
-   融合策略: hybrid
-   置信度: 0.85
-   数据源: knowledge_base, skill_context
-   处理时间: 0.234s
-   提取实体: ['X12', '投影仪', '智能手机']
-```
-
----
-
-## 🧪 测试验证
-
-### 快速验证配置
+再开一个终端窗口，在 `frontend` 目录执行：
 
 ```bash
-cd projects/test2langchain
-python tests/verify_v3_config.py
+npm run admin
 ```
 
-### 运行融合层测试
+管理后台地址：`http://localhost:5174/admin.html`
+
+补充说明：
+
+- `npm run admin` 会使用 `5174` 端口启动独立后台页面
+- 该命令自带 `--open /admin.html`，通常会自动打开浏览器
+- 当前记忆后台已经全部汉化，指标、按钮、状态、提示文案均为中文
+- 开发态下，`/api` 代理到 `8000`，`/api/admin` 代理到 `8001`
+
+## 5. 推荐启动顺序
+
+1. 后端：`python backend/run_backends.py`
+2. 用户前台：`cd frontend && npm run dev`
+3. 管理后台：`cd frontend && npm run admin`
+
+## 6. 启动后检查
+
+建议至少确认这 6 个地址：
+
+- 用户前台：`http://localhost:5173`
+- 管理后台：`http://localhost:5174/admin.html`
+- 用户 API 文档：`http://localhost:8000/docs`
+- 管理 API 文档：`http://localhost:8001/docs`
+- 用户健康检查：`http://localhost:8000/api/v1/health`
+- 管理健康检查：`http://localhost:8001/health`
+
+## 7. 常见问题
+
+### `ModuleNotFoundError: No module named 'app'`
+
+优先在项目根目录执行：
 
 ```bash
-cd projects/test2langchain
+python backend/run_backends.py
+```
+
+### `No module named 'uuid_utils'`
+
+重新安装依赖：
+
+```bash
 conda activate test3
-python tests/test_fusion_final.py
+pip install -r requirements.txt -r backend/requirements.txt
 ```
 
----
+### 管理后台接口请求失败
 
-## 📊 性能指标
+请确认：
 
-### 融合效率
+- 后端已通过 `python backend/run_backends.py` 正常启动
+- 管理 API 可访问 `http://localhost:8001/docs`
+- 管理前端是通过 `npm run admin` 启动，而不是直接双击本地静态文件
 
-- **查询增强**: 利用上下文元数据，检索相关性提升 **15-25%**
-- **智能注入**: RAG结果自动注入，metadata更新 **100% 自动化**
-- **自适应策略**: 根据质量动态选择，响应准确率提升 **20%**
+原因是开发态依赖 Vite 代理把 `/api/admin` 转发到 `8001`。
 
-### 响应时间
+### 端口被占用
 
-| 场景 | V2 | V3 | 提升 |
-|------|-----|-----|------|
-| 简单问候 | 200ms | 100ms | **50%** |
-| 产品咨询 | 500ms | 450ms | **10%** |
-| 复杂问题 | 800ms | 700ms | **12.5%** |
+默认端口：
 
----
+- 后端：`8000`、`8001`
+- 前端：`5173`、`5174`
 
-## 🛠️ 故障排查
-
-### 常见问题
-
-#### 1. 导入错误
-
-**问题**: `ModuleNotFoundError: No module named 'app'`
-
-**解决**:
-```bash
-# 确保在正确目录
-cd projects/test2langchain
-
-# 使用正确的 Python 路径
-export PYTHONPATH="${PYTHONPATH}:$(pwd)"
-```
-
-#### 2. API 响应慢
-
-**可能原因**:
-- 知识库文档未加载
-- RAG检索超时
-
-**解决**:
-```python
-# 检查融合统计
-stats = chat_service_v3.get_fusion_stats()
-print(stats)
-
-# 查看知识库状态
-from app.api.v1.knowledge_base import get_rag_tool
-rag_tool = get_rag_tool()
-print(f"文档数: {rag_tool.collection.count()}")
-```
-
-#### 3. fusion_info 为空
-
-**检查**:
-1. 确认使用 V3 服务（chat.py 已更新）
-2. Schema 已包含 fusion_info 字段
-3. ChatServiceV3 初始化成功
-
-```bash
-python tests/verify_v3_config.py
-```
-
----
-
-## 📚 进阶使用
-
-### 禁用融合（回退到V2）
-
-```python
-response = await chat_service.process_message(
-    session_id="user_001",
-    message="你好",
-    history=[],
-    enable_context_rag_fusion=False  # 禁用融合
-)
-```
-
-### 自定义融合策略
-
-```python
-from tools.rag.context_rag_fusion import (
-    context_rag_fusion_layer,
-    FusionStrategy
-)
-
-# 直接使用融合层
-fusion_result = context_rag_fusion_layer.process(
-    query="你的问题",
-    session_context=session,
-    rag_retrieval_func=your_rag_tool.retrieve,
-    intent="sales"
-)
-
-# 手动选择策略
-if fusion_result.quality.value == "high":
-    strategy = FusionStrategy.HYBRID
-else:
-    strategy = FusionStrategy.CONTEXT_PRIMARY
-```
-
-### 获取融合统计
-
-```python
-stats = chat_service_v3.get_fusion_stats()
-print(stats)
-# {
-#     "fusion_layer": "ContextRAGFusionLayer",
-#     "capabilities": [...],
-#     "fusion_strategies": {...}
-# }
-```
-
----
-
-## 📖 相关文档
-
-- [Context+RAG融合设计文档](docs/context_rag_fusion_design.md)
-- [ContextEngineering实现文档](docs/context_engineering_implementation.md)
-- [项目README](README.md)
-
----
-
-## 🔄 版本对比
-
-| 功能 | V2 | V3 |
-|------|-----|-----|
-| 上下文管理 | ✅ | ✅ + 三层记忆 |
-| RAG检索 | ✅ | ✅ |
-| 双向信息流 | ❌ | ✅ |
-| 自适应融合 | ❌ | ✅ |
-| 质量评估 | ❌ | ✅ |
-| 智能注入 | ❌ | ✅ |
-
----
-
-**版本**: V3 (Context+RAG融合版)
-**创建时间**: 2026-04-07
-**维护者**: AI Engineer Team
+请先结束占用端口的进程，再重新启动。

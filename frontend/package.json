@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "admin": "vite --port 5174 --open /admin.html",
     "build": "vite build",
     "preview": "vite preview"
   },

@@ -2,8 +2,8 @@
   <div class="chat-panel">
     <div class="messages-container" ref="messagesContainer">
       <div
-        v-for="(msg, index) in messages"
-        :key="index"
+        v-for="msg in messages"
+        :key="msg.id"
         :class="['message', msg.role]"
       >
         <div class="message-bubble" v-html="formatMessage(msg.content)"></div>
@@ -58,32 +58,43 @@
 
 <script setup>
 import { nextTick, onMounted, ref } from 'vue'
-import { chatApi } from '../api/index.js'
+import { chatApi, getAuthUser } from '../api/index.js'
 
 const messages = ref([])
 const inputMessage = ref('')
 const loading = ref(false)
-const userId = ref(getOrCreateUserId())
-const sessionId = ref(`session_${userId.value}_${Date.now()}`)
+const authUser = ref(getAuthUser())
+const localUserSeed = ref(getOrCreateLocalUserSeed())
+const sessionId = ref('')
 const messagesContainer = ref(null)
 const inputTextarea = ref(null)
 
 const defaultGreeting = '您好，我是智能客服助手。请告诉我您要咨询的问题。'
+const STORAGE_VERSION = 1
 
-onMounted(() => {
-  messages.value.push({
-    role: 'assistant',
-    content: defaultGreeting,
-    timestamp: new Date().toISOString()
-  })
+onMounted(async () => {
+  await restoreConversationState()
 
   if (inputTextarea.value) {
     inputTextarea.value.focus()
   }
+  await nextTick()
+  scrollToBottom()
 })
 
-function getOrCreateUserId() {
-  const storageKey = 'chat_user_id'
+function refreshAuthUser() {
+  authUser.value = getAuthUser()
+  return authUser.value
+}
+
+function createSessionId() {
+  const current = refreshAuthUser()
+  const base = current?.user_id || localUserSeed.value
+  return `session_${base}_${createIdSuffix()}`
+}
+
+function getOrCreateLocalUserSeed() {
+  const storageKey = 'chat_user_seed'
   const cached = localStorage.getItem(storageKey)
   if (cached) return cached
 
@@ -92,15 +103,136 @@ function getOrCreateUserId() {
   return generated
 }
 
+function createIdSuffix() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
+}
+
+function createMessage(role, content, extra = {}) {
+  return {
+    id: `msg_${createIdSuffix()}`,
+    role,
+    content,
+    timestamp: new Date().toISOString(),
+    customerType: null,
+    ...extra
+  }
+}
+
+function normalizeMessage(message) {
+  if (!message || typeof message !== 'object') return null
+  return {
+    id: message.id || `msg_${createIdSuffix()}`,
+    role: message.role || 'assistant',
+    content: message.content || '',
+    timestamp: message.timestamp || new Date().toISOString(),
+    customerType: message.customerType ?? null
+  }
+}
+
+function getConversationStorageKey() {
+  const current = refreshAuthUser()
+  const base = current?.user_id || localUserSeed.value
+  return `chat_conversation_v${STORAGE_VERSION}_${base}`
+}
+
+function persistConversationState() {
+  try {
+    localStorage.setItem(getConversationStorageKey(), JSON.stringify({
+      sessionId: sessionId.value,
+      messages: messages.value
+    }))
+  } catch (error) {
+    console.error('persist conversation failed:', error)
+  }
+}
+
+async function restoreConversationState() {
+  sessionId.value = createSessionId()
+
+  try {
+    const raw = localStorage.getItem(getConversationStorageKey())
+    if (raw) {
+      const stored = JSON.parse(raw)
+      if (stored?.sessionId) {
+        sessionId.value = stored.sessionId
+      }
+
+      if (Array.isArray(stored?.messages) && stored.messages.length > 0) {
+        messages.value = stored.messages
+          .map(normalizeMessage)
+          .filter(Boolean)
+        return
+      }
+    }
+  } catch (error) {
+    console.error('restore conversation failed:', error)
+  }
+
+  const restored = await restoreConversationFromServer()
+  if (restored) {
+    persistConversationState()
+    return
+  }
+
+  messages.value = [createMessage('assistant', defaultGreeting)]
+  persistConversationState()
+}
+
+async function restoreConversationFromServer() {
+  try {
+    ensureAuthenticated()
+  } catch {
+    return false
+  }
+
+  try {
+    const response = await chatApi.getHistory(sessionId.value)
+    const history = response.data?.messages || []
+    if (!Array.isArray(history) || history.length === 0) {
+      return false
+    }
+
+    messages.value = history
+      .map((msg) => normalizeMessage({
+        role: msg.role,
+        content: msg.content,
+        timestamp: msg.timestamp
+      }))
+      .filter(Boolean)
+    return messages.value.length > 0
+  } catch (error) {
+    console.error('restore server history failed:', error)
+    return false
+  }
+}
+
+function ensureAuthenticated() {
+  const current = refreshAuthUser()
+  if (!current || !current.user_id) {
+    throw new Error('登录状态已失效，请重新登录。')
+  }
+  return current
+}
+
 async function sendMessage() {
   const trimmed = inputMessage.value.trim()
   if (!trimmed || loading.value) return
 
-  const userMessage = {
-    role: 'user',
-    content: trimmed,
-    timestamp: new Date().toISOString()
+  try {
+    ensureAuthenticated()
+  } catch (authError) {
+    messages.value.push(createMessage('assistant', authError.message))
+    inputMessage.value = ''
+    await nextTick()
+    scrollToBottom()
+    persistConversationState()
+    return
   }
+
+  const userMessage = createMessage('user', trimmed)
 
   messages.value.push(userMessage)
   inputMessage.value = ''
@@ -111,12 +243,7 @@ async function sendMessage() {
     content: m.content
   }))
 
-  const assistantMessage = {
-    role: 'assistant',
-    content: '',
-    timestamp: new Date().toISOString(),
-    customerType: null
-  }
+  const assistantMessage = createMessage('assistant', '')
   messages.value.push(assistantMessage)
 
   await nextTick()
@@ -128,7 +255,6 @@ async function sendMessage() {
     await streamAssistantReply(
       {
         sessionId: sessionId.value,
-        userId: userId.value,
         message: trimmed,
         history
       },
@@ -139,29 +265,27 @@ async function sendMessage() {
         }
 
         if (meta.greeting && !greetingInserted) {
-          messages.value.splice(messages.value.length - 1, 0, {
-            role: 'assistant',
-            content: meta.greeting,
-            timestamp: new Date().toISOString(),
-            customerType: meta.customer_type || null
-          })
+          messages.value.splice(messages.value.length - 1, 0, createMessage(
+            'assistant',
+            meta.greeting,
+            { customerType: meta.customer_type || null }
+          ))
           greetingInserted = true
         }
       }
     )
 
     if (!assistantMessage.content.trim()) {
-      const response = await chatApi.sendMessage(sessionId.value, userId.value, trimmed, history)
+      const response = await chatApi.sendMessage(sessionId.value, trimmed, history)
       assistantMessage.content = response.data.message || ''
       assistantMessage.customerType = response.data.customer_type || null
 
       if (response.data.greeting && !greetingInserted) {
-        messages.value.splice(messages.value.length - 1, 0, {
-          role: 'assistant',
-          content: response.data.greeting,
-          timestamp: new Date().toISOString(),
-          customerType: response.data.customer_type || null
-        })
+        messages.value.splice(messages.value.length - 1, 0, createMessage(
+          'assistant',
+          response.data.greeting,
+          { customerType: response.data.customer_type || null }
+        ))
       }
     }
   } catch (error) {
@@ -172,17 +296,20 @@ async function sendMessage() {
   loading.value = false
   await nextTick()
   scrollToBottom()
+  persistConversationState()
 }
 
 async function streamAssistantReply(payload, assistantMessage, onMeta) {
   const response = await chatApi.streamMessage(
     payload.sessionId,
-    payload.userId,
     payload.message,
     payload.history
   )
 
   if (!response.ok) {
+    if (response.status === 401) {
+      throw new Error('登录状态已失效，请重新登录。')
+    }
     throw new Error(`stream request failed: ${response.status}`)
   }
 
@@ -272,16 +399,16 @@ function scrollToBottom() {
 async function clearHistory() {
   if (!confirm('确定要清空当前会话历史吗？')) return
 
+  const previousSessionId = sessionId.value
   try {
-    await chatApi.clearHistory(sessionId.value, userId.value)
-    messages.value = [{
-      role: 'assistant',
-      content: defaultGreeting,
-      timestamp: new Date().toISOString()
-    }]
+    await chatApi.clearHistory(previousSessionId)
   } catch (error) {
     console.error('clear history failed:', error)
   }
+
+  messages.value = [createMessage('assistant', defaultGreeting)]
+  sessionId.value = createSessionId()
+  persistConversationState()
 }
 </script>
 

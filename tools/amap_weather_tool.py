@@ -8,7 +8,6 @@ import time
 import requests
 from typing import Optional, Dict, Any
 from langchain.tools import BaseTool
-from langchain_core.pydantic_v1 import Field
 import sys
 import os
 from loguru import logger

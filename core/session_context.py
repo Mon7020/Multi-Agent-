@@ -2,9 +2,12 @@
 Unified session context manager with thread-safe three-tier memory integration.
 """
 
+import json
+import os
 import re
 import threading
-from dataclasses import dataclass, field
+from collections import defaultdict
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -13,6 +16,8 @@ from langchain.memory import ConversationBufferMemory
 from core.logger import LoggerManager
 from tools.rag.context_engineering import (
     CompressionStrategy,
+    CompressedMemory,
+    ConversationTurn,
     IntentEvolutionTracker,
     LongTermMemoryManager,
     MediumTermMemoryManager,
@@ -44,8 +49,16 @@ class SessionContext:
         self.user_id = user_id or session_id
         self.max_history = max_history
         self.created_at = datetime.now()
+        self.updated_at = self.created_at
 
         self._lock = threading.RLock()
+        self._storage_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)),
+            "data",
+            "memory",
+            "session_context",
+        )
+        os.makedirs(self._storage_path, exist_ok=True)
 
         self.memory = ConversationBufferMemory(
             memory_key="chat_history",
@@ -80,8 +93,216 @@ class SessionContext:
         self.intent_tracker = IntentEvolutionTracker()
         self._last_compressed_turn_id = -1
 
+        self._restore_persistent_state()
         self._load_long_term_preferences()
         logger.info(f"[SessionContext] session created: {session_id}, user={self.user_id}")
+
+    def bind_session(self, session_id: str) -> None:
+        """Bind the latest active session id to this user context."""
+        with self._lock:
+            if session_id and self.session_id != session_id:
+                self.session_id = session_id
+                self.updated_at = datetime.now()
+                self._persist_context_snapshot()
+
+    def _get_context_snapshot_path(self) -> str:
+        return os.path.join(self._storage_path, f"{self.user_id}_context.json")
+
+    def _make_json_safe(self, value: Any) -> Any:
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, dict):
+            return {str(k): self._make_json_safe(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple, set)):
+            return [self._make_json_safe(item) for item in value]
+        return str(value)
+
+    def _rebuild_buffer_memory(self) -> None:
+        self.memory.clear()
+        for turn in self.turn_history:
+            if turn.role == "user":
+                self.memory.chat_memory.add_user_message(turn.content)
+            else:
+                self.memory.chat_memory.add_ai_message(turn.content)
+
+    def _restore_persistent_state(self) -> None:
+        path = self._get_context_snapshot_path()
+        if not os.path.exists(path):
+            return
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                snapshot = json.load(f)
+        except Exception as exc:
+            logger.warning(f"[SessionContext] failed to load snapshot for {self.user_id}: {exc}")
+            return
+
+        with self._lock:
+            created_at = snapshot.get("created_at")
+            updated_at = snapshot.get("updated_at")
+            if created_at:
+                try:
+                    self.created_at = datetime.fromisoformat(created_at)
+                except ValueError:
+                    pass
+            if updated_at:
+                try:
+                    self.updated_at = datetime.fromisoformat(updated_at)
+                except ValueError:
+                    self.updated_at = datetime.now()
+
+            self.session_id = snapshot.get("session_id") or self.session_id
+            self.metadata.update(snapshot.get("metadata") or {})
+            self.skill_context = snapshot.get("skill_context") or {}
+            self.rag_cache = snapshot.get("rag_cache") or {}
+
+            self.turn_history = []
+            for item in snapshot.get("turn_history", []):
+                if not isinstance(item, dict):
+                    continue
+                self.turn_history.append(
+                    TurnRecord(
+                        role=item.get("role", "assistant"),
+                        content=item.get("content", ""),
+                        agent_name=item.get("agent_name"),
+                        intent=item.get("intent"),
+                        rag_results=item.get("rag_results") or [],
+                        evaluation_score=float(item.get("evaluation_score", 0.0) or 0.0),
+                        metadata=item.get("metadata") or {},
+                        timestamp=item.get("timestamp") or datetime.now().isoformat(),
+                    )
+                )
+
+            short_term_state = snapshot.get("short_term") or {}
+            short_term_turns = []
+            for item in short_term_state.get("turns", []):
+                if not isinstance(item, dict):
+                    continue
+                short_term_turns.append(
+                    ConversationTurn(
+                        turn_id=int(item.get("turn_id", len(short_term_turns))),
+                        role=item.get("role", "assistant"),
+                        content=item.get("content", ""),
+                        intent=item.get("intent"),
+                        entities=list(item.get("entities") or []),
+                        rag_results=item.get("rag_results") or [],
+                        metadata=item.get("metadata") or {},
+                        timestamp=item.get("timestamp") or datetime.now().isoformat(),
+                    )
+                )
+            self.short_term_memory.turns = short_term_turns
+            self.short_term_memory.current_turn_id = int(
+                short_term_state.get("current_turn_id", len(short_term_turns))
+            )
+
+            entity_tracker = defaultdict(list)
+            for key, value in (short_term_state.get("entity_tracker") or {}).items():
+                entity_tracker[str(key)] = list(value or [])
+            if not entity_tracker and short_term_turns:
+                for turn in short_term_turns:
+                    for entity in turn.entities:
+                        entity_tracker[str(entity)].append(turn.intent or "general")
+            self.short_term_memory.entity_tracker = entity_tracker
+            self.short_term_memory.intent_history = list(
+                short_term_state.get("intent_history")
+                or [turn.intent for turn in short_term_turns if turn.intent]
+            )
+            self.short_term_memory.topic_stack = list(short_term_state.get("topic_stack") or [])
+
+            medium_term_state = snapshot.get("medium_term") or {}
+            medium_term_memories = []
+            for item in medium_term_state.get("compressed_memories", []):
+                if not isinstance(item, dict):
+                    continue
+                medium_term_memories.append(
+                    CompressedMemory(
+                        summary=item.get("summary", ""),
+                        key_entities=list(item.get("key_entities") or []),
+                        discussed_topics=list(item.get("discussed_topics") or []),
+                        user_preferences=item.get("user_preferences") or {},
+                        resolved_issues=list(item.get("resolved_issues") or []),
+                        pending_questions=list(item.get("pending_questions") or []),
+                        action_items=list(item.get("action_items") or []),
+                        context_continuity=item.get("context_continuity", ""),
+                        original_turn_count=int(item.get("original_turn_count", 0) or 0),
+                        compression_ratio=float(item.get("compression_ratio", 0.0) or 0.0),
+                        timestamp=item.get("timestamp") or datetime.now().isoformat(),
+                    )
+                )
+            self.medium_term_memory.compressed_memories = medium_term_memories
+
+            intent_state = snapshot.get("intent_tracker") or {}
+            self.intent_tracker.intent_sequence = list(intent_state.get("intent_sequence") or [])
+            self.intent_tracker.current_goal = intent_state.get("current_goal")
+            self.intent_tracker.goal_history = list(intent_state.get("goal_history") or [])
+            self._last_compressed_turn_id = int(snapshot.get("last_compressed_turn_id", -1) or -1)
+
+            self._rebuild_buffer_memory()
+            logger.info(f"[SessionContext] restored snapshot for user={self.user_id}")
+
+    def get_persistent_snapshot(self) -> Dict[str, Any]:
+        with self._lock:
+            return {
+                "version": 1,
+                "user_id": self.user_id,
+                "session_id": self.session_id,
+                "max_history": self.max_history,
+                "created_at": self.created_at.isoformat(),
+                "updated_at": self.updated_at.isoformat(),
+                "metadata": self._make_json_safe(self.metadata),
+                "skill_context": self._make_json_safe(self.skill_context),
+                "rag_cache": self._make_json_safe(self.rag_cache),
+                "turn_history": [self._make_json_safe(asdict(turn)) for turn in self.turn_history],
+                "short_term": {
+                    "turns": [self._make_json_safe(asdict(turn)) for turn in self.short_term_memory.turns],
+                    "current_turn_id": self.short_term_memory.current_turn_id,
+                    "entity_tracker": self._make_json_safe(dict(self.short_term_memory.entity_tracker)),
+                    "intent_history": self._make_json_safe(self.short_term_memory.intent_history),
+                    "topic_stack": self._make_json_safe(self.short_term_memory.topic_stack),
+                },
+                "medium_term": {
+                    "compressed_memories": [
+                        self._make_json_safe(asdict(memory))
+                        for memory in self.medium_term_memory.compressed_memories
+                    ],
+                },
+                "intent_tracker": {
+                    "intent_sequence": self._make_json_safe(self.intent_tracker.intent_sequence),
+                    "current_goal": self.intent_tracker.current_goal,
+                    "goal_history": self._make_json_safe(self.intent_tracker.goal_history),
+                },
+                "three_tier_summary": self.get_three_tier_context(),
+                "last_compressed_turn_id": self._last_compressed_turn_id,
+            }
+
+    def _persist_context_snapshot(self) -> bool:
+        with self._lock:
+            self.updated_at = datetime.now()
+            snapshot = self.get_persistent_snapshot()
+
+        try:
+            with open(self._get_context_snapshot_path(), "w", encoding="utf-8") as f:
+                json.dump(snapshot, f, ensure_ascii=False, indent=2)
+            return True
+        except Exception as exc:
+            logger.error(f"[SessionContext] failed to persist snapshot for {self.user_id}: {exc}")
+            return False
+
+    def persist_context_snapshot(self) -> bool:
+        return self._persist_context_snapshot()
+
+    def delete_persisted_snapshot(self) -> bool:
+        path = self._get_context_snapshot_path()
+        if not os.path.exists(path):
+            return True
+        try:
+            os.remove(path)
+            return True
+        except OSError as exc:
+            logger.error(f"[SessionContext] failed to delete snapshot for {self.user_id}: {exc}")
+            return False
 
     def _load_long_term_preferences(self) -> None:
         """Load persisted long-term profile into current metadata."""
@@ -137,7 +358,13 @@ class SessionContext:
                 continue
             if key == "total_spent" and float(value or 0) <= 0:
                 continue
-            self.long_term_memory.update_preference(self.user_id, key, value)
+            self.long_term_memory.update_preference(
+                self.user_id,
+                key,
+                value,
+                source="authenticated_profile_sync",
+                confidence=0.7,
+            )
 
         discussed_products = self.metadata.get("discussed_products", [])
         if isinstance(discussed_products, list):
@@ -243,6 +470,7 @@ class SessionContext:
                     self.long_term_memory.add_entity(self.user_id, entity, intent or "general")
 
             self._try_compress_short_term()
+            self._persist_context_snapshot()
 
     def update_skill_context(
         self,
@@ -277,6 +505,7 @@ class SessionContext:
                     self.metadata["current_product"] = product_data.get("name")
 
             self._sync_metadata_to_long_term()
+            self._persist_context_snapshot()
             logger.debug(f"[SessionContext] skill context updated: {skill_name}")
 
     def get_skill_context(self, skill_name: str) -> Optional[Any]:
@@ -333,7 +562,9 @@ class SessionContext:
         """Persist long-term profile to disk."""
         with self._lock:
             self._sync_metadata_to_long_term()
-            return self.long_term_memory.save_profile(self.user_id)
+            long_term_saved = self.long_term_memory.save_profile(self.user_id)
+        snapshot_saved = self._persist_context_snapshot()
+        return long_term_saved and snapshot_saved
 
     def get_unified_context(self) -> Dict[str, Any]:
         """Get unified context for downstream routing and skills."""
@@ -379,6 +610,7 @@ class SessionContext:
             self.rag_cache["last_query"] = query
             self.rag_cache["last_rag_results"] = results
             self.rag_cache["recent_rag_results"] = results
+            self._persist_context_snapshot()
 
     def get_average_evaluation_score(self) -> float:
         """Get average non-zero evaluation score."""
@@ -424,7 +656,7 @@ class SessionContext:
                 "three_tier_stats": three_tier.get("stats", {}),
             }
 
-    def clear(self) -> None:
+    def clear(self, remove_persisted: bool = False) -> None:
         """Clear in-memory session state."""
         with self._lock:
             self.memory.clear()
@@ -452,7 +684,13 @@ class SessionContext:
             self.intent_tracker = IntentEvolutionTracker()
             self._last_compressed_turn_id = -1
 
+            self._load_long_term_preferences()
             logger.info(f"[SessionContext] session cleared: {self.session_id}")
+
+        if remove_persisted:
+            self.delete_persisted_snapshot()
+        else:
+            self._persist_context_snapshot()
 
 
 class SessionContextManager:
@@ -473,8 +711,9 @@ class SessionContextManager:
             if self._initialized:
                 return
             self._initialized = True
-            self._sessions_lock = threading.Lock()
+            self._sessions_lock = threading.RLock()
             self._sessions: Dict[str, SessionContext] = {}
+            self._user_sessions: Dict[str, SessionContext] = {}
             logger.info("[SessionContextManager] initialized")
 
     def create_session(
@@ -485,28 +724,58 @@ class SessionContextManager:
     ) -> SessionContext:
         """Create or get one session context."""
         with self._sessions_lock:
+            if user_id and user_id in self._user_sessions:
+                context = self._user_sessions[user_id]
+                self._sessions[session_id] = context
+                context.bind_session(session_id)
+                logger.info(f"[SessionContextManager] rebound session {session_id} -> user {user_id}")
+                return context
+
             if session_id not in self._sessions:
-                self._sessions[session_id] = SessionContext(
+                context = SessionContext(
                     session_id=session_id,
                     max_history=max_history,
                     user_id=user_id,
                 )
+                self._sessions[session_id] = context
+                if user_id:
+                    self._user_sessions[user_id] = context
                 logger.info(f"[SessionContextManager] created session: {session_id}")
             return self._sessions[session_id]
 
-    def get_session(self, session_id: str) -> Optional[SessionContext]:
+    def get_session(self, session_id: str, user_id: Optional[str] = None) -> Optional[SessionContext]:
         """Get an existing session context."""
         with self._sessions_lock:
+            if user_id and user_id in self._user_sessions:
+                return self._user_sessions.get(user_id)
             return self._sessions.get(session_id)
 
-    def delete_session(self, session_id: str) -> bool:
+    def get_session_by_user(self, user_id: str) -> Optional[SessionContext]:
+        with self._sessions_lock:
+            return self._user_sessions.get(user_id)
+
+    def list_user_ids(self) -> List[str]:
+        with self._sessions_lock:
+            return list(self._user_sessions.keys())
+
+    def delete_session(self, session_id: str, user_id: Optional[str] = None, remove_persisted: bool = True) -> bool:
         """Delete one session context."""
         with self._sessions_lock:
-            if session_id in self._sessions:
-                del self._sessions[session_id]
-                logger.info(f"[SessionContextManager] deleted session: {session_id}")
-                return True
-            return False
+            context = self.get_session(session_id, user_id=user_id)
+            if context is None:
+                return False
+
+            aliases = [sid for sid, active_context in self._sessions.items() if active_context is context]
+            for alias in aliases:
+                del self._sessions[alias]
+
+            user_key = context.user_id
+            if user_key in self._user_sessions and self._user_sessions[user_key] is context:
+                del self._user_sessions[user_key]
+
+        context.clear(remove_persisted=remove_persisted)
+        logger.info(f"[SessionContextManager] deleted session: {session_id}")
+        return True
 
     def list_sessions(self) -> List[str]:
         """List all live session IDs."""
@@ -516,7 +785,8 @@ class SessionContextManager:
     def get_all_sessions_summary(self) -> List[Dict[str, Any]]:
         """Get summary for all sessions."""
         with self._sessions_lock:
-            return [session.get_session_summary() for session in self._sessions.values()]
+            unique_contexts = list({id(session): session for session in self._sessions.values()}.values())
+            return [session.get_session_summary() for session in unique_contexts]
 
 
 session_context_manager = SessionContextManager()
