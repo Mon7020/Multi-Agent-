@@ -298,6 +298,41 @@ class AuthService:
 
         return {"id": user_id, "username": normalized, "created_at": created_at}
 
+    def update_user_role(self, user_id: str, role: str) -> Dict[str, Any]:
+        if role not in {"user", "operator", "admin", "super_admin"}:
+            raise AuthError("unsupported role")
+        if not user_id:
+            raise AuthError("user id is required")
+
+        placeholder = self._db_config.get("placeholder", "?")
+        now = int(time.time())
+
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                sql = f"""
+                    UPDATE users
+                    SET role = {placeholder}, updated_at = {placeholder}
+                    WHERE id = {placeholder}
+                    """
+                params = (role, now, user_id)
+                if self._db_type == "sqlite":
+                    cursor = conn.execute(sql, params)
+                    affected = cursor.rowcount
+                else:
+                    with conn.cursor() as cursor:
+                        affected = cursor.execute(sql, params)
+                if not affected:
+                    raise AuthError("user not found")
+                conn.commit()
+            finally:
+                conn.close()
+
+        user = self.get_user_by_id(user_id)
+        if not user:
+            raise AuthError("user not found")
+        return user
+
     def authenticate(self, username: str, password: str) -> Dict[str, Any]:
         normalized = self._normalize_username(username)
         with self._lock:

@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.admin import memory
+from app.api.admin import dashboard, memory
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from core.logger import LoggerManager
@@ -40,6 +40,7 @@ app.add_middleware(
 )
 
 app.include_router(memory.router, prefix="/api/admin")
+app.include_router(dashboard.router, prefix="/api/admin")
 
 
 @app.get("/")
