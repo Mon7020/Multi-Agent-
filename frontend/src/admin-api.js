@@ -65,6 +65,16 @@ export const knowledgeAdminApi = {
     return adminApi.get(`/knowledge/documents/${encodeURIComponent(documentId)}`)
   },
 
+  listDocumentVersions(documentId) {
+    return adminApi.get(`/knowledge/documents/${encodeURIComponent(documentId)}/versions`)
+  },
+
+  getDocumentVersion(documentId, versionId) {
+    return adminApi.get(
+      `/knowledge/documents/${encodeURIComponent(documentId)}/versions/${encodeURIComponent(versionId)}`
+    )
+  },
+
   createDocument(payload) {
     const formData = new FormData()
     formData.append('file', payload.file)
@@ -96,6 +106,10 @@ export const knowledgeAdminApi = {
 
   restoreDocument(documentId) {
     return adminApi.post(`/knowledge/documents/${encodeURIComponent(documentId)}/restore`)
+  },
+
+  rollbackDocument(documentId, payload) {
+    return adminApi.post(`/knowledge/documents/${encodeURIComponent(documentId)}/rollback`, payload)
   }
 }
 

@@ -253,6 +253,55 @@
           <p v-if="selectedDocument.deleted" class="detail-tip">
             恢复后的文档会自动重建分块，但默认保持“未发布”和“前台隐藏”。
           </p>
+          <section data-testid="knowledge-version-panel" class="version-card">
+            <div class="table-head">
+              <div>
+                <p class="panel-label">版本历史</p>
+                <strong>{{ versions.length }} 个版本</strong>
+              </div>
+              <span v-if="versionsLoading" class="summary-pill">加载中</span>
+            </div>
+
+            <div v-if="versionsLoading" class="empty-panel">正在加载版本历史...</div>
+            <div v-else-if="versions.length === 0" class="empty-panel">当前文档还没有可展示的历史版本。</div>
+            <div v-else class="version-layout">
+              <div class="version-list">
+                <button
+                  v-for="version in versions"
+                  :key="version.version_id"
+                  :data-testid="`knowledge-version-row-${version.version_id}`"
+                  class="version-row"
+                  :class="{ active: selectedVersion?.version_id === version.version_id }"
+                  @click="selectedVersion = version"
+                >
+                  <strong>V{{ version.version_no }} · {{ version.filename }}</strong>
+                  <span>{{ version.action }}</span>
+                  <span>{{ version.is_current ? '当前版本' : formatDate(version.created_at) }}</span>
+                </button>
+              </div>
+
+              <div
+                v-if="selectedVersion"
+                data-testid="knowledge-version-preview"
+                class="version-preview"
+              >
+                <p class="panel-label">版本快照</p>
+                <strong>{{ selectedVersion.filename }}</strong>
+                <p>{{ selectedVersion.description || '未设置描述' }}</p>
+                <p>{{ formatTags(selectedVersion.tags) }}</p>
+                <p>Checksum: {{ selectedVersion.checksum }}</p>
+                <p>{{ selectedVersion.chunk_count || 0 }} 个分块</p>
+                <button
+                  data-testid="knowledge-version-rollback"
+                  class="solid-btn secondary"
+                  :disabled="isOperator || selectedDocument.deleted || rollbacking"
+                  @click="rollbackSelectedVersion"
+                >
+                  {{ rollbacking ? '回滚中...' : '回滚到此版本' }}
+                </button>
+              </div>
+            </div>
+          </section>
         </template>
       </aside>
     </div>
@@ -275,7 +324,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 
 import { knowledgeAdminApi } from '../../admin-api.js'
 import { getAuthUser } from '../../auth/session.js'
@@ -298,8 +347,12 @@ const replacing = ref(false)
 const deleting = ref(false)
 const restoring = ref(false)
 const saving = ref(false)
+const versionsLoading = ref(false)
+const rollbacking = ref(false)
 const errorMessage = ref('')
 const successMessage = ref('')
+const versions = ref([])
+const selectedVersion = ref(null)
 
 const isOperator = computed(() => (getAuthUser()?.role || '') === 'operator')
 
@@ -367,6 +420,35 @@ function selectDocument(doc) {
   selectedDocument.value = doc || null
 }
 
+function syncVersionSelection(nextVersions, preferredVersionId = '') {
+  const targetId = preferredVersionId || selectedVersion.value?.version_id || ''
+  selectedVersion.value =
+    nextVersions.find((item) => item.version_id === targetId) ||
+    nextVersions[0] ||
+    null
+}
+
+async function loadVersions(documentId, preferredVersionId = '') {
+  if (!documentId) {
+    versions.value = []
+    selectedVersion.value = null
+    return
+  }
+  versionsLoading.value = true
+  try {
+    const response = await knowledgeAdminApi.listDocumentVersions(documentId)
+    const nextVersions = response.data.versions || []
+    versions.value = nextVersions
+    syncVersionSelection(nextVersions, preferredVersionId)
+  } catch (error) {
+    versions.value = []
+    selectedVersion.value = null
+    setError(error.response?.data?.detail || error.message || '加载版本历史失败')
+  } finally {
+    versionsLoading.value = false
+  }
+}
+
 function syncSelection(nextDocuments, preferredDocumentId = '') {
   const targetId = preferredDocumentId || selectedDocument.value?.document_id || ''
   selectedDocument.value =
@@ -416,6 +498,7 @@ async function saveCurrent() {
     })
     setSuccess(`已更新 ${response.data.filename} 的展示与权限设置`)
     await loadDocuments(response.data.document_id)
+    await loadVersions(response.data.document_id)
   } catch (error) {
     setError(error.response?.data?.detail || error.message || '保存文档设置失败')
   } finally {
@@ -446,6 +529,7 @@ async function handleCreateFile(event) {
     }
     setSuccess(`已上传 ${response.data.filename}`)
     await loadDocuments(response.data.document_id)
+    await loadVersions(response.data.document_id)
   } catch (error) {
     setError(error.response?.data?.detail || error.message || '上传知识文件失败')
   } finally {
@@ -467,6 +551,7 @@ async function handleReplaceFile(event) {
     const response = await knowledgeAdminApi.replaceDocument(selectedDocument.value.document_id, file)
     setSuccess(`已替换 ${response.data.filename}`)
     await loadDocuments(response.data.document_id)
+    await loadVersions(response.data.document_id)
   } catch (error) {
     setError(error.response?.data?.detail || error.message || '替换文件失败')
   } finally {
@@ -513,6 +598,44 @@ async function restoreCurrent() {
     restoring.value = false
   }
 }
+
+async function rollbackSelectedVersion() {
+  if (
+    !selectedDocument.value ||
+    !selectedVersion.value ||
+    isOperator.value ||
+    selectedDocument.value.deleted
+  ) {
+    return
+  }
+  if (typeof window !== 'undefined' && typeof window.confirm === 'function') {
+    const confirmed = window.confirm(
+      `确认回滚到版本 ${selectedVersion.value.version_id} 吗？会回滚文件内容、文件名、描述和标签，不会修改发布、显隐、角色和删除状态。`
+    )
+    if (!confirmed) return
+  }
+  rollbacking.value = true
+  try {
+    const response = await knowledgeAdminApi.rollbackDocument(selectedDocument.value.document_id, {
+      target_version_id: selectedVersion.value.version_id,
+      reason: ''
+    })
+    setSuccess(`已基于版本 ${response.data.target_version_id} 生成新版本 ${response.data.new_version_id}`)
+    await loadDocuments(response.data.document_id)
+    await loadVersions(response.data.document_id, response.data.new_version_id)
+  } catch (error) {
+    setError(error.response?.data?.detail || error.message || '回滚版本失败')
+  } finally {
+    rollbacking.value = false
+  }
+}
+
+watch(
+  () => selectedDocument.value?.document_id || '',
+  async (documentId) => {
+    await loadVersions(documentId)
+  }
+)
 
 onMounted(() => {
   clearMessages()

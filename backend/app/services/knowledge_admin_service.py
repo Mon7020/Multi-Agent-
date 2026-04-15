@@ -16,6 +16,10 @@ ALLOWED_DOC_EXTENSIONS = {".txt", ".pdf", ".docx"}
 REGISTRY_VERSION = 2
 
 
+class KnowledgeConflictError(ValueError):
+    pass
+
+
 class KnowledgeAdminService:
     def __init__(self) -> None:
         self.reconfigure()
@@ -30,6 +34,7 @@ class KnowledgeAdminService:
         metadata_path: Optional[str] = None,
         audit_storage_path: Optional[str] = None,
         trash_dir: Optional[str] = None,
+        history_dir: Optional[str] = None,
     ) -> None:
         project_root = self._project_root()
         self.docs_dir = Path(docs_dir) if docs_dir else project_root / "data" / "docs"
@@ -38,6 +43,8 @@ class KnowledgeAdminService:
         self.metadata_path.parent.mkdir(parents=True, exist_ok=True)
         self.trash_dir = Path(trash_dir) if trash_dir else self.metadata_path.parent / "trash"
         self.trash_dir.mkdir(parents=True, exist_ok=True)
+        self.history_dir = Path(history_dir) if history_dir else self.metadata_path.parent / "history"
+        self.history_dir.mkdir(parents=True, exist_ok=True)
         self.audit_log_service = AuditLogService(
             storage_path=audit_storage_path or str(project_root / "logs" / "admin_audit.jsonl")
         )
@@ -83,12 +90,17 @@ class KnowledgeAdminService:
         return f"doc_{uuid4().hex}"
 
     @staticmethod
+    def _new_version_id() -> str:
+        return f"ver_{uuid4().hex}"
+
+    @staticmethod
     def _default_registry() -> Dict[str, Any]:
         return {"version": REGISTRY_VERSION, "documents": {}}
 
     @staticmethod
     def _default_record() -> Dict[str, Any]:
         return {
+            "current_version_id": None,
             "description": "",
             "tags": [],
             "visible_to_frontend": True,
@@ -109,6 +121,42 @@ class KnowledgeAdminService:
         digest.update(file_path.read_bytes())
         return digest.hexdigest()
 
+    def _history_root(self, document_id: str) -> Path:
+        root = self.history_dir / document_id
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    def _manifest_path(self, document_id: str) -> Path:
+        return self._history_root(document_id) / "manifest.json"
+
+    def _default_manifest(self, document_id: str) -> Dict[str, Any]:
+        return {
+            "document_id": document_id,
+            "current_version_id": None,
+            "latest_version_no": 0,
+            "versions": [],
+        }
+
+    def _load_manifest(self, document_id: str) -> Dict[str, Any]:
+        manifest_path = self._manifest_path(document_id)
+        if not manifest_path.exists():
+            return self._default_manifest(document_id)
+        try:
+            return json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return self._default_manifest(document_id)
+
+    def _save_manifest(self, document_id: str, manifest: Dict[str, Any]) -> None:
+        self._manifest_path(document_id).write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _snapshot_file_path(self, document_id: str, version_id: str, file_type: str) -> Path:
+        version_dir = self._history_root(document_id) / version_id
+        version_dir.mkdir(parents=True, exist_ok=True)
+        return version_dir / f"source{file_type}"
+
     def _build_record(
         self,
         *,
@@ -123,6 +171,7 @@ class KnowledgeAdminService:
         updated_at = legacy.get("updated_at") or datetime.fromtimestamp(stat.st_mtime).isoformat()
         return {
             "document_id": document_id,
+            "current_version_id": legacy.get("current_version_id"),
             "filename": filename,
             "file_type": file_path.suffix.lower(),
             "storage_name": file_path.name,
@@ -283,6 +332,49 @@ class KnowledgeAdminService:
             return self.trash_dir / storage_name
         return self.docs_dir / storage_name
 
+    def _append_version_snapshot(
+        self,
+        *,
+        record: Dict[str, Any],
+        actor_id: str,
+        action: str,
+        reason: Optional[str] = None,
+        source_version_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        manifest = self._load_manifest(record["document_id"])
+        version_id = self._new_version_id()
+        version_no = int(manifest.get("latest_version_no", 0) or 0) + 1
+        snapshot_path = self._snapshot_file_path(
+            record["document_id"],
+            version_id,
+            record.get("file_type") or Path(record["filename"]).suffix.lower(),
+        )
+        snapshot_path.write_bytes(self._record_storage_path(record).read_bytes())
+        snapshot = {
+            "version_id": version_id,
+            "version_no": version_no,
+            "document_id": record["document_id"],
+            "action": action,
+            "source_version_id": source_version_id,
+            "filename": record["filename"],
+            "file_type": record["file_type"],
+            "snapshot_storage_name": snapshot_path.name,
+            "snapshot_storage_path": str(snapshot_path.resolve()),
+            "size": record["size"],
+            "checksum": record["checksum"],
+            "chunk_count": int(record.get("chunk_count", 0) or 0),
+            "description": record.get("description", ""),
+            "tags": self._normalize_tags(record.get("tags", [])),
+            "created_at": self._now_iso(),
+            "created_by": actor_id,
+            "reason": reason,
+        }
+        manifest["latest_version_no"] = version_no
+        manifest["current_version_id"] = version_id
+        manifest.setdefault("versions", []).append(snapshot)
+        self._save_manifest(record["document_id"], manifest)
+        return snapshot
+
     def _index_file(self, file_path: Path) -> int:
         rag_tool = get_rag_tool()
         documents = rag_tool.load_document(
@@ -383,6 +475,31 @@ class KnowledgeAdminService:
             raise FileNotFoundError(document_id)
         return record
 
+    def list_document_versions(self, document_id: str) -> Dict[str, Any]:
+        registry = self._load_registry()
+        document_id, record = self._resolve_record(document_id, registry)
+        manifest = self._load_manifest(document_id)
+        versions = list(reversed(manifest.get("versions", [])))
+        current_version_id = record.get("current_version_id") or manifest.get("current_version_id")
+        return {
+            "document_id": document_id,
+            "current_version_id": current_version_id,
+            "versions": [
+                {
+                    **version,
+                    "is_current": version["version_id"] == current_version_id,
+                }
+                for version in versions
+            ],
+        }
+
+    def get_document_version(self, document_id: str, version_id: str) -> Dict[str, Any]:
+        versions_payload = self.list_document_versions(document_id)
+        for version in versions_payload["versions"]:
+            if version["version_id"] == version_id:
+                return version
+        raise FileNotFoundError(version_id)
+
     def create_document(
         self,
         *,
@@ -429,6 +546,9 @@ class KnowledgeAdminService:
                 "chunk_count": chunk_count,
             }
         )
+        registry["documents"][document_id] = record
+        snapshot = self._append_version_snapshot(record=record, actor_id=actor_id, action="create")
+        record["current_version_id"] = snapshot["version_id"]
         registry["documents"][document_id] = record
         self._save_registry(registry)
         self.audit_log_service.write(
@@ -496,6 +616,7 @@ class KnowledgeAdminService:
         updated = self._build_record(document_id=document_id, file_path=new_path, filename=safe, legacy=record)
         updated.update(
             {
+                "current_version_id": record.get("current_version_id"),
                 "description": record.get("description", ""),
                 "tags": self._normalize_tags(record.get("tags", [])),
                 "published": bool(record.get("published", True)),
@@ -509,6 +630,8 @@ class KnowledgeAdminService:
                 "deleted_by": None,
             }
         )
+        snapshot = self._append_version_snapshot(record=updated, actor_id=actor_id, action="replace")
+        updated["current_version_id"] = snapshot["version_id"]
         registry["documents"][document_id] = updated
         self._save_registry(registry)
         self.audit_log_service.write(
@@ -727,6 +850,109 @@ class KnowledgeAdminService:
             },
         )
         return self._serialize_record(restored)
+
+    def rollback_document(
+        self,
+        document_id: str,
+        *,
+        target_version_id: str,
+        actor_id: str,
+        reason: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        registry = self._load_registry()
+        document_id, current = self._resolve_record(document_id, registry)
+        if current.get("deleted"):
+            raise KnowledgeConflictError("restore the document before rollback")
+
+        target = self.get_document_version(document_id, target_version_id)
+        snapshot_path = Path(target["snapshot_storage_path"])
+        if not snapshot_path.exists() or not snapshot_path.is_file():
+            raise KnowledgeConflictError("snapshot file is unavailable for rollback")
+
+        target_filename = self._safe_filename(target["filename"])
+        conflict_id = self._find_document_id_by_filename(target_filename, registry)
+        if conflict_id is not None and conflict_id != document_id:
+            raise FileExistsError(target_filename)
+
+        current_path = self._record_storage_path(current)
+        target_path = self.docs_dir / target_filename
+        if target_path != current_path and target_path.exists():
+            raise FileExistsError(target_filename)
+
+        current_source = str(current_path.resolve())
+        current_bytes = current_path.read_bytes() if current_path.exists() else None
+        snapshot_bytes = snapshot_path.read_bytes()
+
+        try:
+            self._delete_chunks(current_source)
+            if target_path != current_path and current_path.exists():
+                current_path.unlink()
+            target_path.write_bytes(snapshot_bytes)
+            chunk_count = self._index_file(target_path)
+        except Exception:
+            if target_path.exists():
+                target_path.unlink()
+            if current_bytes is not None:
+                current_path.write_bytes(current_bytes)
+                try:
+                    self._index_file(current_path)
+                except Exception:
+                    pass
+            raise
+
+        now = self._now_iso()
+        rolled = self._build_record(
+            document_id=document_id,
+            file_path=target_path,
+            filename=target_filename,
+            legacy=current,
+        )
+        rolled.update(
+            {
+                "current_version_id": current.get("current_version_id"),
+                "description": target.get("description", ""),
+                "tags": self._normalize_tags(target.get("tags", [])),
+                "published": bool(current.get("published", True)),
+                "visible_to_frontend": bool(current.get("visible_to_frontend", True)),
+                "allowed_roles": self._normalize_roles(current.get("allowed_roles")),
+                "deleted": bool(current.get("deleted", False)),
+                "created_at": current.get("created_at"),
+                "created_by": current.get("created_by"),
+                "updated_at": now,
+                "updated_by": actor_id,
+                "deleted_at": current.get("deleted_at"),
+                "deleted_by": current.get("deleted_by"),
+                "chunk_count": chunk_count,
+            }
+        )
+        snapshot = self._append_version_snapshot(
+            record=rolled,
+            actor_id=actor_id,
+            action="rollback",
+            reason=reason,
+            source_version_id=target_version_id,
+        )
+        rolled["current_version_id"] = snapshot["version_id"]
+        registry["documents"][document_id] = rolled
+        self._save_registry(registry)
+        self.audit_log_service.write(
+            actor_id=actor_id,
+            module="knowledge",
+            action="knowledge.version.rollback",
+            target_type="document",
+            target_id=document_id,
+            result="success",
+            extra={
+                "target_version_id": target_version_id,
+                "new_version_id": snapshot["version_id"],
+                "reason": reason,
+                "old_checksum": current.get("checksum"),
+                "new_checksum": rolled.get("checksum"),
+                "old_chunk_count": current.get("chunk_count", 0),
+                "new_chunk_count": rolled.get("chunk_count", 0),
+            },
+        )
+        return self._serialize_record(rolled)
 
 
 knowledge_admin_service = KnowledgeAdminService()

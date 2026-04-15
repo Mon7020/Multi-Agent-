@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from pydantic import BaseModel
 
 from app.api.admin.dependencies import require_admin_user
-from app.services.knowledge_admin_service import knowledge_admin_service
+from app.services.knowledge_admin_service import KnowledgeConflictError, knowledge_admin_service
 
 router = APIRouter()
 
@@ -18,6 +18,11 @@ class UpdateKnowledgeDocumentRequest(BaseModel):
     visible_to_frontend: Optional[bool] = None
     published: Optional[bool] = None
     allowed_roles: Optional[List[str]] = None
+
+
+class RollbackKnowledgeDocumentRequest(BaseModel):
+    target_version_id: str
+    reason: Optional[str] = None
 
 
 def _parse_json_list(raw: Optional[str], field_name: str) -> Optional[List[str]]:
@@ -34,9 +39,11 @@ def _parse_json_list(raw: Optional[str], field_name: str) -> Optional[List[str]]
 
 def _raise_knowledge_http_error(exc: Exception) -> None:
     if isinstance(exc, FileNotFoundError):
-        raise HTTPException(status_code=404, detail="document not found") from exc
+        raise HTTPException(status_code=404, detail="document or version not found") from exc
     if isinstance(exc, FileExistsError):
         raise HTTPException(status_code=409, detail="document already exists") from exc
+    if isinstance(exc, KnowledgeConflictError):
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if isinstance(exc, ValueError):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     raise exc
@@ -72,6 +79,31 @@ async def get_knowledge_document(
     del user
     try:
         return knowledge_admin_service.get_document(document_id, include_deleted=True)
+    except Exception as exc:
+        _raise_knowledge_http_error(exc)
+
+
+@router.get("/knowledge/documents/{document_id}/versions")
+async def list_knowledge_document_versions(
+    document_id: str,
+    user=Depends(require_admin_user("operator", "admin", "super_admin")),
+):
+    del user
+    try:
+        return knowledge_admin_service.list_document_versions(document_id)
+    except Exception as exc:
+        _raise_knowledge_http_error(exc)
+
+
+@router.get("/knowledge/documents/{document_id}/versions/{version_id}")
+async def get_knowledge_document_version(
+    document_id: str,
+    version_id: str,
+    user=Depends(require_admin_user("operator", "admin", "super_admin")),
+):
+    del user
+    try:
+        return knowledge_admin_service.get_document_version(document_id, version_id)
     except Exception as exc:
         _raise_knowledge_http_error(exc)
 
@@ -156,5 +188,27 @@ async def restore_knowledge_document(
 ):
     try:
         return knowledge_admin_service.restore_document(document_id, actor_id=user["id"])
+    except Exception as exc:
+        _raise_knowledge_http_error(exc)
+
+
+@router.post("/knowledge/documents/{document_id}/rollback")
+async def rollback_knowledge_document(
+    document_id: str,
+    request: RollbackKnowledgeDocumentRequest,
+    user=Depends(require_admin_user("admin", "super_admin")),
+):
+    try:
+        rolled = knowledge_admin_service.rollback_document(
+            document_id,
+            target_version_id=request.target_version_id,
+            actor_id=user["id"],
+            reason=request.reason,
+        )
+        return {
+            **rolled,
+            "target_version_id": request.target_version_id,
+            "new_version_id": rolled.get("current_version_id"),
+        }
     except Exception as exc:
         _raise_knowledge_http_error(exc)

@@ -9,11 +9,14 @@ vi.mock('../../admin-api.js', () => ({
   knowledgeAdminApi: {
     listDocuments: vi.fn(),
     getDocument: vi.fn(),
+    listDocumentVersions: vi.fn(),
+    getDocumentVersion: vi.fn(),
     createDocument: vi.fn(),
     updateDocument: vi.fn(),
     replaceDocument: vi.fn(),
     deleteDocument: vi.fn(),
-    restoreDocument: vi.fn()
+    restoreDocument: vi.fn(),
+    rollbackDocument: vi.fn()
   }
 }))
 
@@ -39,6 +42,25 @@ function makeDocument(overrides = {}) {
   }
 }
 
+function makeVersion(overrides = {}) {
+  return {
+    version_id: 'ver_current',
+    version_no: 2,
+    action: 'replace',
+    source_version_id: null,
+    filename: 'alpha-v2.txt',
+    description: 'release doc',
+    tags: ['release'],
+    checksum: 'abc123',
+    chunk_count: 2,
+    size: 2048,
+    created_at: '2026-04-15T12:05:00',
+    created_by: 'admin-2',
+    is_current: true,
+    ...overrides
+  }
+}
+
 function findButton(wrapper, label) {
   const button = wrapper
     .findAll('button')
@@ -54,6 +76,13 @@ describe('KnowledgeAdminPage', () => {
     vi.clearAllMocks()
     getAuthUser.mockReturnValue({ role: 'admin' })
     window.confirm = vi.fn(() => true)
+    knowledgeAdminApi.listDocumentVersions.mockResolvedValue({
+      data: {
+        document_id: 'doc_alpha',
+        current_version_id: null,
+        versions: []
+      }
+    })
   })
 
   it('renders document metrics and keeps operator in read-only mode', async () => {
@@ -301,5 +330,132 @@ describe('KnowledgeAdminPage', () => {
     expect(knowledgeAdminApi.listDocuments).toHaveBeenCalledTimes(2)
     expect(wrapper.text()).toContain('alpha-v2.txt')
     expect(wrapper.text()).toContain('2 个分块')
+  })
+  it('loads version history and shows the selected version preview', async () => {
+    knowledgeAdminApi.listDocuments.mockResolvedValue({
+      data: {
+        documents: [makeDocument()],
+        total: 1
+      }
+    })
+    knowledgeAdminApi.listDocumentVersions.mockResolvedValue({
+      data: {
+        document_id: 'doc_alpha',
+        current_version_id: 'ver_current',
+        versions: [
+          makeVersion(),
+          makeVersion({
+            version_id: 'ver_v1',
+            version_no: 1,
+            action: 'create',
+            filename: 'alpha.txt',
+            description: 'alpha doc',
+            tags: ['faq'],
+            checksum: 'def456',
+            chunk_count: 4,
+            size: 1024,
+            created_at: '2026-04-15T12:00:00',
+            created_by: 'admin-1',
+            is_current: false
+          })
+        ]
+      }
+    })
+
+    const wrapper = mount(KnowledgeAdminPage)
+    await flushPromises()
+
+    expect(knowledgeAdminApi.listDocumentVersions).toHaveBeenCalledWith('doc_alpha')
+    expect(wrapper.get('[data-testid="knowledge-version-panel"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="knowledge-version-row-ver_current"]').text()).toContain('alpha-v2.txt')
+    expect(wrapper.get('[data-testid="knowledge-version-preview"]').text()).toContain('release doc')
+  })
+
+  it('rolls back a version and refreshes current metrics', async () => {
+    knowledgeAdminApi.listDocuments
+      .mockResolvedValueOnce({
+        data: {
+          documents: [makeDocument({ filename: 'alpha-v2.txt', chunk_count: 2, size: 2048 })],
+          total: 1
+        }
+      })
+      .mockResolvedValueOnce({
+        data: {
+          documents: [makeDocument({ filename: 'alpha.txt', chunk_count: 4, size: 1024 })],
+          total: 1
+        }
+      })
+    knowledgeAdminApi.listDocumentVersions
+      .mockResolvedValueOnce({
+        data: {
+          document_id: 'doc_alpha',
+          current_version_id: 'ver_current',
+          versions: [
+            makeVersion(),
+            makeVersion({
+              version_id: 'ver_v1',
+              version_no: 1,
+              action: 'create',
+              filename: 'alpha.txt',
+              description: 'alpha doc',
+              tags: ['faq'],
+              checksum: 'def456',
+              chunk_count: 4,
+              size: 1024,
+              created_at: '2026-04-15T12:00:00',
+              created_by: 'admin-1',
+              is_current: false
+            })
+          ]
+        }
+      })
+      .mockResolvedValueOnce({
+        data: {
+          document_id: 'doc_alpha',
+          current_version_id: 'ver_rollback',
+          versions: [
+            makeVersion({
+              version_id: 'ver_rollback',
+              version_no: 3,
+              action: 'rollback',
+              source_version_id: 'ver_v1',
+              filename: 'alpha.txt',
+              description: 'alpha doc',
+              tags: ['faq'],
+              checksum: 'xyz999',
+              chunk_count: 4,
+              size: 1024,
+              created_at: '2026-04-15T12:10:00',
+              created_by: 'admin-3',
+              is_current: true
+            }),
+            makeVersion({ is_current: false })
+          ]
+        }
+      })
+    knowledgeAdminApi.rollbackDocument.mockResolvedValue({
+      data: {
+        document_id: 'doc_alpha',
+        filename: 'alpha.txt',
+        chunk_count: 4,
+        current_version_id: 'ver_rollback',
+        new_version_id: 'ver_rollback',
+        target_version_id: 'ver_v1'
+      }
+    })
+
+    const wrapper = mount(KnowledgeAdminPage)
+    await flushPromises()
+
+    await wrapper.get('[data-testid="knowledge-version-row-ver_v1"]').trigger('click')
+    await wrapper.get('[data-testid="knowledge-version-rollback"]').trigger('click')
+    await flushPromises()
+
+    expect(knowledgeAdminApi.rollbackDocument).toHaveBeenCalledWith('doc_alpha', {
+      target_version_id: 'ver_v1',
+      reason: ''
+    })
+    expect(wrapper.text()).toContain('alpha.txt')
+    expect(wrapper.get('[data-testid="knowledge-version-row-ver_rollback"]').exists()).toBe(true)
   })
 })
