@@ -120,24 +120,6 @@ export const knowledgeBaseApi = {
     return api.get(`/knowledge-base/${encodeDocId(docId)}`)
   },
 
-  uploadDocument(file, chunkSize = 400, chunkOverlap = 50) {
-    const formData = new FormData()
-    formData.append('file', file)
-    formData.append('chunk_size', chunkSize)
-    formData.append('chunk_overlap', chunkOverlap)
-    return api.post('/knowledge-base/upload', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
-    })
-  },
-
-  updateDocument(docId, content) {
-    return api.put(`/knowledge-base/${encodeDocId(docId)}`, { content })
-  },
-
-  deleteDocument(docId) {
-    return api.delete(`/knowledge-base/${encodeDocId(docId)}`)
-  },
-
   getParams() {
     return api.get('/knowledge-base/params')
   },

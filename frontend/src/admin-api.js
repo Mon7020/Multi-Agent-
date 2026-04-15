@@ -57,12 +57,45 @@ export const userAdminApi = {
 }
 
 export const knowledgeAdminApi = {
-  listDocuments() {
-    return adminApi.get('/knowledge/documents')
+  listDocuments(params = {}) {
+    return adminApi.get('/knowledge/documents', { params })
+  },
+
+  getDocument(documentId) {
+    return adminApi.get(`/knowledge/documents/${encodeURIComponent(documentId)}`)
+  },
+
+  createDocument(payload) {
+    const formData = new FormData()
+    formData.append('file', payload.file)
+    formData.append('description', payload.description || '')
+    formData.append('tags', JSON.stringify(payload.tags || []))
+    formData.append('allowed_roles', JSON.stringify(payload.allowed_roles || []))
+    formData.append('published', JSON.stringify(Boolean(payload.published)))
+    formData.append('visible_to_frontend', JSON.stringify(Boolean(payload.visible_to_frontend)))
+    return adminApi.post('/knowledge/documents', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    })
   },
 
   updateDocument(documentId, payload) {
     return adminApi.patch(`/knowledge/documents/${encodeURIComponent(documentId)}`, payload)
+  },
+
+  replaceDocument(documentId, file) {
+    const formData = new FormData()
+    formData.append('file', file)
+    return adminApi.post(`/knowledge/documents/${encodeURIComponent(documentId)}/replace`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    })
+  },
+
+  deleteDocument(documentId) {
+    return adminApi.delete(`/knowledge/documents/${encodeURIComponent(documentId)}`)
+  },
+
+  restoreDocument(documentId) {
+    return adminApi.post(`/knowledge/documents/${encodeURIComponent(documentId)}/restore`)
   }
 }
 

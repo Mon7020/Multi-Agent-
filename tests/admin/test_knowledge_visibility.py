@@ -2,6 +2,7 @@ import shutil
 import unittest
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -19,6 +20,26 @@ user_app.include_router(auth.router, prefix="/api/v1")
 user_app.include_router(knowledge_base.router, prefix="/api/v1")
 
 
+class FakeRagTool:
+    def __init__(self):
+        self._db_available = True
+        self.collection = self
+        self.source_chunks = {}
+
+    def get(self, include=None):
+        del include
+        metadatas = []
+        for source, count in self.source_chunks.items():
+            metadatas.extend([{"source_file": source}] * count)
+        return {"metadatas": metadatas}
+
+    def count(self):
+        return sum(self.source_chunks.values())
+
+    def delete_documents_by_source(self, source):
+        return self.source_chunks.pop(source, 0)
+
+
 class KnowledgeVisibilityTest(unittest.TestCase):
     def setUp(self):
         self.temp_dir = TEST_TMP_ROOT / uuid.uuid4().hex
@@ -30,6 +51,20 @@ class KnowledgeVisibilityTest(unittest.TestCase):
         db_path = self.temp_dir / "auth.sqlite3"
         auth_service.reconfigure(database_url=f"sqlite:///{db_path.as_posix()}")
         knowledge_admin_service.reconfigure(docs_dir=str(self.docs_dir), metadata_path=str(self.metadata_path))
+
+        self.rag_tool = FakeRagTool()
+        self.get_rag_tool_patcher = patch(
+            "app.services.knowledge_admin_service.get_rag_tool",
+            return_value=self.rag_tool,
+            create=True,
+        )
+        self.get_loaded_rag_tool_patcher = patch(
+            "app.services.knowledge_admin_service.get_loaded_rag_tool",
+            return_value=self.rag_tool,
+            create=True,
+        )
+        self.get_rag_tool_patcher.start()
+        self.get_loaded_rag_tool_patcher.start()
 
         self.admin_client = TestClient(admin_app)
         self.user_client = TestClient(user_app)
@@ -73,6 +108,8 @@ class KnowledgeVisibilityTest(unittest.TestCase):
         )
 
     def tearDown(self):
+        self.get_rag_tool_patcher.stop()
+        self.get_loaded_rag_tool_patcher.stop()
         knowledge_admin_service.reconfigure()
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
@@ -87,6 +124,39 @@ class KnowledgeVisibilityTest(unittest.TestCase):
             [doc["filename"] for doc in operator_response.json()["documents"]],
             ["alpha.txt", "operator.txt"],
         )
+
+    def test_frontend_list_uses_document_ids_and_metrics(self):
+        admin_docs = self.admin_client.get(
+            "/api/admin/knowledge/documents",
+            headers=self.admin_headers,
+        ).json()["documents"]
+        alpha_doc = next(doc for doc in admin_docs if doc["filename"] == "alpha.txt")
+
+        response = self.user_client.get("/api/v1/knowledge-base", headers=self.user_headers)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()["documents"]), 1)
+        payload = response.json()["documents"][0]
+        self.assertEqual(payload["id"], alpha_doc["document_id"])
+        self.assertEqual(payload["filename"], "alpha.txt")
+        self.assertIn("chunk_count", payload)
+
+    def test_deleted_document_is_hidden_from_frontend(self):
+        admin_docs = self.admin_client.get(
+            "/api/admin/knowledge/documents",
+            headers=self.admin_headers,
+        ).json()["documents"]
+        alpha_doc = next(doc for doc in admin_docs if doc["filename"] == "alpha.txt")
+
+        delete_response = self.admin_client.delete(
+            f"/api/admin/knowledge/documents/{alpha_doc['document_id']}",
+            headers=self.admin_headers,
+        )
+        self.assertEqual(delete_response.status_code, 200)
+
+        user_response = self.user_client.get("/api/v1/knowledge-base", headers=self.user_headers)
+        self.assertEqual(user_response.status_code, 200)
+        self.assertEqual(user_response.json()["documents"], [])
 
     def test_admin_can_hide_document_from_frontend(self):
         response = self.admin_client.patch(
