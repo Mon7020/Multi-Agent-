@@ -416,6 +416,70 @@
 - `role`
 - `status`
 
+返回字段：
+
+- `users[].user_id`
+- `users[].username`
+- `users[].role`
+- `users[].status`
+- `users[].created_at`
+- `users[].updated_at`
+
+### `GET /api/admin/users/{user_id}`
+
+权限：
+
+- `admin`
+- `super_admin`
+
+返回字段：
+
+- `user_id`
+- `username`
+- `role`
+- `status`
+- `created_at`
+- `updated_at`
+- `last_login_at`
+- `password_updated_at`
+
+常见错误：
+
+- `404`：目标账号不存在
+
+### `PATCH /api/admin/users/{user_id}/status`
+
+权限：
+
+- `admin`
+- `super_admin`
+
+请求体示例：
+
+```json
+{
+  "status": "disabled"
+}
+```
+
+行为：
+
+- 仅支持 `active` 和 `disabled`
+- 成功后写入审计日志，动作名为 `update_status`
+- 成功响应：`{"user_id":"...","status":"disabled"}`
+
+权限规则：
+
+- `admin` 只能操作 `user` 和 `operator`
+- `admin` 不能操作自己的账号状态
+- `super_admin` 不能操作自己的账号状态
+
+常见错误：
+
+- `400`：`status` 非法
+- `403`：无权限或命中状态操作限制
+- `404`：目标账号不存在
+
 ### `PATCH /api/admin/users/{user_id}/role`
 
 权限：
@@ -429,6 +493,23 @@
   "role": "operator"
 }
 ```
+
+行为：
+
+- 仅支持 `user`、`operator`、`admin`、`super_admin`
+- 成功后写入审计日志，动作名为 `update_role`
+- 成功响应：`{"user_id":"...","role":"operator"}`
+
+权限规则：
+
+- 仅 `super_admin` 可调用
+- 不能修改自己的角色
+
+常见错误：
+
+- `400`：`role` 非法
+- `403`：无权限或尝试修改自己的角色
+- `404`：目标账号不存在
 
 ## 审计日志
 
