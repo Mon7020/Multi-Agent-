@@ -2,19 +2,28 @@
 
 基于 FastAPI + LangChain 的多模块智能客服项目，当前包含用户前台、统一后台管理系统、三层记忆能力、知识库与运行参数管理、用户认证和角色权限控制。
 
-如果你只想先把项目跑起来，直接看 [V3_QUICKSTART.md](./V3_QUICKSTART.md)。
+如果你只想快速启动项目，直接看 [V3_QUICKSTART.md](./V3_QUICKSTART.md)。
 
 ## 当前阶段
 
-2026-04-14 的 Phase 1 已完成以下后台基础能力：
+截至 2026-04-15，项目已完成：
 
-- 统一后台入口与路由壳层
-- 角色模型：`super_admin`、`admin`、`operator`、`user`
-- 后台仪表盘、记忆管理、知识库管理、系统设置、账号管理
-- 记忆管理后台审计日志、服务端搜索筛选和全中文界面
-- 前台知识库改为只读展示，仅显示“已发布 + 前台可见 + 当前角色允许访问”的文件
-- 前台设置改为只读摘要，运行参数与权限策略统一迁移到后台
-- 后台可控制知识文件的“前台显示 / 隐藏”“草稿 / 已发布”“允许访问角色”
+- Phase 1：统一后台骨架、角色权限、记忆管理后台、只读前台设置摘要、知识库基础显隐控制
+- Phase 2：知识库后台完整流程
+- Phase 3（当前分支进行中）：知识库版本历史与安全回滚
+
+当前后台知识库模块已经支持：
+
+- 稳定 `document_id` 文档主键
+- 文档列表、详情、筛选
+- 新文档上传
+- 元数据编辑
+- 文件替换且保留同一 `document_id`
+- 版本历史查看
+- 基于历史版本生成新的安全回滚版本
+- 软删除与恢复
+- `chunk_count`、`checksum` 等运行指标展示
+- 前台只读知识库按角色、发布状态和显隐策略过滤
 
 ## 系统结构
 
@@ -114,12 +123,12 @@ npm run admin
 
 - `super_admin`
   - 全部后台能力
-  - 可调整角色与系统运行参数
+  - 可调整账号角色与系统运行参数
 - `admin`
   - 可管理记忆、知识库、设置、账号
 - `operator`
   - 可进入后台查看总览、记忆、知识库
-  - 对知识库配置为只读，不可修改发布和显隐
+  - 知识库模块只读，不可执行上传、替换、删除、恢复和保存
 - `user`
   - 仅可访问用户前台
 
@@ -142,7 +151,8 @@ npm run admin
 说明：
 
 - 列表和详情都要求登录
-- 只返回当前角色允许访问且已发布、允许前台显示的文件
+- 前台只返回当前角色允许访问且满足“未删除 + 已发布 + 前台可见”的文档
+- 返回的 `id` 即后台稳定 `document_id`
 
 ### 后台接口
 
@@ -156,7 +166,15 @@ npm run admin
   - `DELETE /api/admin/memory/users/{user_id}`
 - 知识库管理
   - `GET /api/admin/knowledge/documents`
+  - `GET /api/admin/knowledge/documents/{document_id}`
+  - `POST /api/admin/knowledge/documents`
   - `PATCH /api/admin/knowledge/documents/{document_id}`
+  - `POST /api/admin/knowledge/documents/{document_id}/replace`
+  - `GET /api/admin/knowledge/documents/{document_id}/versions`
+  - `GET /api/admin/knowledge/documents/{document_id}/versions/{version_id}`
+  - `POST /api/admin/knowledge/documents/{document_id}/rollback`
+  - `DELETE /api/admin/knowledge/documents/{document_id}`
+  - `POST /api/admin/knowledge/documents/{document_id}/restore`
 - 系统设置
   - `GET /api/admin/settings/summary`
   - `POST /api/admin/settings/runtime`
@@ -166,29 +184,61 @@ npm run admin
 
 更详细的接口说明见 [docs/admin-api.md](./docs/admin-api.md)。
 
+## 知识库后台说明
+
+知识库后台当前采用文件系统 + JSON 注册表方案：
+
+- 活动文件目录：`data/docs/`
+- 回收目录：`data/knowledge/trash/`
+- 历史目录：`data/knowledge/history/`
+- 注册表：`data/knowledge/registry.json`
+
+每条文档记录至少包含：
+
+- `document_id`
+- `filename`
+- `checksum`
+- `chunk_count`
+- `description`
+- `tags`
+- `published`
+- `visible_to_frontend`
+- `allowed_roles`
+- `deleted`
+
+恢复策略：
+
+- 恢复后默认 `published=false`
+- 恢复后默认 `visible_to_frontend=false`
+
+版本回滚策略：
+
+- 会回滚：文件内容、`filename`、`description`、`tags`
+- 不会自动回滚：`published`、`visible_to_frontend`、`allowed_roles`、`deleted`
+- 回滚会基于目标历史版本生成一个新的当前版本，不会直接改写旧版本
+
 ## 文档
 
 - 后台 API 文档：[docs/admin-api.md](./docs/admin-api.md)
 - 用户手册：[docs/admin-user-guide.md](./docs/admin-user-guide.md)
 - 管理员指南：[docs/admin-admin-guide.md](./docs/admin-admin-guide.md)
 - Phase 1 测试报告：[docs/reports/2026-04-14-admin-backoffice-foundation-test-report.md](./docs/reports/2026-04-14-admin-backoffice-foundation-test-report.md)
+- Phase 2 测试报告：[docs/reports/2026-04-15-admin-knowledge-phase2-test-report.md](./docs/reports/2026-04-15-admin-knowledge-phase2-test-report.md)
+- Phase 3 测试报告：[docs/reports/2026-04-15-admin-knowledge-phase3-test-report.md](./docs/reports/2026-04-15-admin-knowledge-phase3-test-report.md)
 
 ## 测试与验证
 
-后端验证：
+本阶段知识库后端验证：
 
 ```bash
-D:\agentlearn\miniconda\envs\test3\python.exe -m unittest \
-  tests.admin.test_auth_role_foundation \
-  tests.admin.test_admin_access_and_audit \
-  tests.admin.test_user_admin_api \
-  tests.admin.test_memory_admin_api \
-  tests.admin.test_knowledge_visibility \
-  tests.admin.test_settings_admin_api \
-  tests.test_memory_admin_localization -v
+D:\agentlearn\miniconda\envs\test3\python.exe -m unittest tests.admin.test_knowledge_admin_registry -v
+D:\agentlearn\miniconda\envs\test3\python.exe -m unittest tests.admin.test_knowledge_admin_phase2_api -v
+D:\agentlearn\miniconda\envs\test3\python.exe -m unittest tests.admin.test_knowledge_visibility -v
+D:\agentlearn\miniconda\envs\test3\python.exe -m unittest tests.admin.test_knowledge_admin_versioning_service -v
+D:\agentlearn\miniconda\envs\test3\python.exe -m unittest tests.admin.test_knowledge_admin_versioning_api -v
 ```
 
-前端验证：
+后台前端验证：
 
 ```bash
 cd frontend
@@ -202,7 +252,9 @@ npm run build
 - 记忆上下文：`data/memory/session_context/`
 - 长期画像：`data/memory/long_term/`
 - 知识文件：`data/docs/`
-- 知识文件权限元数据：`data/knowledge/registry.json`
+- 知识文件回收区：`data/knowledge/trash/`
+- 知识历史版本：`data/knowledge/history/`
+- 知识注册表：`data/knowledge/registry.json`
 - 后台审计日志：`logs/admin_audit.jsonl`
 
 ## 常见问题

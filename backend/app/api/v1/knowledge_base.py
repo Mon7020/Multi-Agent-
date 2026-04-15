@@ -137,42 +137,21 @@ def _read_document_content(file_path: Path) -> str:
 
 @router.get("/knowledge-base", response_model=DocumentListResponse)
 async def list_documents(current_user=Depends(require_authenticated_user())):
-    docs_dir = get_docs_dir()
-    all_files = sorted([p for p in docs_dir.iterdir() if p.is_file()], key=lambda p: p.name.lower())
-
-    chunk_counts = {}
-    try:
-        rag_tool = get_loaded_rag_tool()
-        if rag_tool and rag_tool.collection and rag_tool._db_available:
-            all_docs = rag_tool.collection.get(include=["metadatas"])
-            for metadata in (all_docs or {}).get("metadatas") or []:
-                source = metadata.get("source_file") or metadata.get("file_path", "")
-                if source:
-                    name = Path(source).name
-                    chunk_counts[name] = chunk_counts.get(name, 0) + 1
-    except Exception as exc:
-        print(f"[WARN] failed to count chunks: {exc}")
-
-    documents = []
-    for file_path in all_files:
-        stat = file_path.stat()
-        filename = file_path.name
-        if not knowledge_admin_service.can_user_access_document(filename, current_user["role"]):
-            continue
-        documents.append(
-            DocumentInfo(
-                id=filename,
-                filename=filename,
-                file_path=str(file_path),
-                file_type=file_path.suffix.lower(),
-                chunk_count=chunk_counts.get(filename, 0),
-                size=stat.st_size,
-                upload_time=datetime.fromtimestamp(stat.st_ctime).isoformat(),
-                update_time=datetime.fromtimestamp(stat.st_mtime).isoformat(),
-            )
+    documents = knowledge_admin_service.list_frontend_documents(current_user["role"])
+    payload = [
+        DocumentInfo(
+            id=document["document_id"],
+            filename=document["filename"],
+            file_path=document["storage_path"],
+            file_type=document["file_type"],
+            chunk_count=document.get("chunk_count", 0),
+            size=document["size"],
+            upload_time=document["created_at"],
+            update_time=document["updated_at"],
         )
-
-    return DocumentListResponse(documents=documents, total=len(documents))
+        for document in documents
+    ]
+    return DocumentListResponse(documents=payload, total=len(payload))
 
 
 @router.post("/knowledge-base/upload")
@@ -376,13 +355,22 @@ async def cache_health(current_user=Depends(require_admin_user("admin", "super_a
 
 @router.get("/knowledge-base/{document_id}", response_model=DocumentContentResponse)
 async def get_document(document_id: str, current_user=Depends(require_authenticated_user())):
-    file_path = _resolve_document_path(document_id)
-    if not knowledge_admin_service.can_user_access_document(file_path.name, current_user["role"]):
-        raise HTTPException(status_code=404, detail="document not found")
+    try:
+        record = knowledge_admin_service.get_frontend_document(
+            document_id=document_id,
+            role=current_user["role"],
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="document not found") from exc
+    file_path = Path(record["storage_path"])
     content = _read_document_content(file_path)
-    filename = file_path.name
 
-    return DocumentContentResponse(id=filename, filename=filename, content=content, chunks=[])
+    return DocumentContentResponse(
+        id=record["document_id"],
+        filename=record["filename"],
+        content=content,
+        chunks=[],
+    )
 
 
 @router.put("/knowledge-base/{document_id}")

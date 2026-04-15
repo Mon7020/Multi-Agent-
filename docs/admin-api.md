@@ -2,30 +2,31 @@
 
 ## 基础信息
 
-- 用户 API 基址：`/api/v1`
-- 后台 API 基址：`/api/admin`
+- 用户 API 基础路径：`/api/v1`
+- 后台 API 基础路径：`/api/admin`
 - 认证方式：`Authorization: Bearer <token>`
 
 角色边界：
 
-- `super_admin`：全部后台接口
-- `admin`：记忆、知识库、设置、账号管理
-- `operator`：后台总览、记忆管理、知识库查看
-- `user`：无后台接口权限
+- `super_admin`：全部后台权限
+- `admin`：总览、记忆、知识库、设置、账号管理
+- `operator`：总览、记忆管理、知识库查看
+- `user`：无后台权限
 
-## 用户前台相关接口
+## 用户前台接口
 
 ### `GET /api/v1/knowledge-base`
 
 说明：
 
 - 需要登录
-- 仅返回“已发布 + 前台可见 + 当前角色允许访问”的文件
+- 返回当前角色允许访问的只读知识库列表
+- 列表过滤条件为：`deleted=false`、`published=true`、`visible_to_frontend=true`、`allowed_roles` 包含当前角色
 
 响应字段：
 
 - `documents`
-  - `id`
+  - `id`：稳定文档标识，等于后台 `document_id`
   - `filename`
   - `file_path`
   - `file_type`
@@ -40,14 +41,15 @@
 说明：
 
 - 需要登录
-- 如果文件不在当前角色可见范围内，返回 `404`
+- 使用稳定 `document_id` 获取详情
+- 如果文档未发布、前台隐藏、已删除或当前角色无权访问，返回 `404`
 
 ### `GET /api/v1/knowledge-base/params`
 
 说明：
 
 - 需要登录
-- 前台只读获取当前运行参数摘要
+- 返回当前 RAG 运行参数摘要、缓存统计和运行指标
 
 ## 后台总览
 
@@ -58,11 +60,6 @@
 - `operator`
 - `admin`
 - `super_admin`
-
-响应：
-
-- `current_user`
-- `modules`
 
 ## 后台记忆管理
 
@@ -77,7 +74,7 @@
 查询参数：
 
 - `query`：按 `user_id` 或 `username` 搜索
-- `active_only`：可选，按内存活跃状态筛选
+- `active_only`：按上下文活跃状态筛选
 
 ### `GET /api/admin/memory/users/{user_id}`
 
@@ -87,11 +84,6 @@
 - `admin`
 - `super_admin`
 
-说明：
-
-- 返回该用户的上下文快照和长期画像
-- 若无记忆数据，返回 `404`
-
 ### `POST /api/admin/memory/users/{user_id}/preferences`
 
 权限：
@@ -100,7 +92,7 @@
 - `admin`
 - `super_admin`
 
-请求体：
+请求体示例：
 
 ```json
 {
@@ -110,12 +102,6 @@
 }
 ```
 
-说明：
-
-- 写入长期偏好
-- 同步更新上下文元数据
-- 记录审计日志
-
 ### `DELETE /api/admin/memory/users/{user_id}/context`
 
 权限：
@@ -123,11 +109,6 @@
 - `operator`
 - `admin`
 - `super_admin`
-
-说明：
-
-- 清理该用户的上下文记忆
-- 记录审计日志
 
 ### `DELETE /api/admin/memory/users/{user_id}`
 
@@ -137,12 +118,9 @@
 - `admin`
 - `super_admin`
 
-说明：
-
-- 清理该用户全部记忆数据
-- 记录审计日志
-
 ## 后台知识库管理
+
+知识库后台以稳定 `document_id` 为主键，所有写操作都会写入审计日志，并维护 `chunk_count`、`checksum`、`deleted` 等运行指标。
 
 ### `GET /api/admin/knowledge/documents`
 
@@ -152,17 +130,82 @@
 - `admin`
 - `super_admin`
 
+查询参数：
+
+- `keyword`：按文件名、描述、标签搜索
+- `status`：`active`、`deleted`、`all`
+- `published`：可选布尔值
+- `visible_to_frontend`：可选布尔值
+
 响应字段：
 
 - `document_id`
 - `filename`
 - `file_type`
+- `storage_name`
+- `storage_path`
 - `size`
+- `checksum`
+- `chunk_count`
+- `description`
+- `tags`
+- `published`
+- `visible_to_frontend`
+- `allowed_roles`
+- `deleted`
+- `created_at`
+- `created_by`
+- `updated_at`
+- `updated_by`
+- `deleted_at`
+- `deleted_by`
 - `upload_time`
 - `update_time`
-- `visible_to_frontend`
-- `published`
-- `allowed_roles`
+
+### `GET /api/admin/knowledge/documents/{document_id}`
+
+权限：
+
+- `operator`
+- `admin`
+- `super_admin`
+
+说明：
+
+- 返回单个文档完整元数据
+- 支持获取已删除文档详情
+
+### `POST /api/admin/knowledge/documents`
+
+权限：
+
+- `admin`
+- `super_admin`
+
+请求类型：
+
+- `multipart/form-data`
+
+表单字段：
+
+- `file`：必填，支持 `.txt`、`.pdf`、`.docx`
+- `description`：可选
+- `tags`：可选，JSON 数组字符串
+- `allowed_roles`：可选，JSON 数组字符串
+- `published`：可选，布尔值
+- `visible_to_frontend`：可选，布尔值
+
+行为：
+
+- 上传新文件到 `data/docs/`
+- 写入向量库并刷新 `chunk_count`
+- 生成新的稳定 `document_id`
+- 写入知识库注册表 `data/knowledge/registry.json`
+
+常见错误：
+
+- `400`：文件名或类型非法
+- `409`：同名活动文档已存在
 
 ### `PATCH /api/admin/knowledge/documents/{document_id}`
 
@@ -175,6 +218,8 @@
 
 ```json
 {
+  "description": "产品 FAQ",
+  "tags": ["faq", "release"],
   "visible_to_frontend": true,
   "published": true,
   "allowed_roles": ["user", "operator", "admin", "super_admin"]
@@ -183,10 +228,147 @@
 
 说明：
 
-- 控制前台显示 / 隐藏
-- 控制草稿 / 已发布
-- 控制允许访问的角色
-- 记录审计日志
+- 仅更新元数据
+- 不替换文件内容
+- 兼容旧调用方式：仍允许部分历史逻辑按文件名进入服务层
+
+### `POST /api/admin/knowledge/documents/{document_id}/replace`
+
+权限：
+
+- `admin`
+- `super_admin`
+
+请求类型：
+
+- `multipart/form-data`
+
+表单字段：
+
+- `file`：必填，新文件
+
+行为：
+
+- 保留原有 `document_id`
+- 删除旧文件分块并覆盖活动文件
+- 重新生成 `checksum`、`size`、`chunk_count`
+- 已发布文档替换后保留原发布状态
+
+常见错误：
+
+- `400`：文档已删除，不能直接替换
+- `409`：新文件名与其他活动文档冲突
+
+### `GET /api/admin/knowledge/documents/{document_id}/versions`
+
+权限：
+
+- `operator`
+- `admin`
+- `super_admin`
+
+说明：
+
+- 返回指定文档的版本历史列表
+- 列表按 `version_no` 倒序返回，便于后台优先查看最新版本
+- 响应包含 `current_version_id`，并在每条版本记录上标记是否为当前版本
+
+响应字段：
+
+- `document_id`
+- `current_version_id`
+- `versions`
+  - `version_id`
+  - `version_no`
+  - `action`
+  - `source_version_id`
+  - `filename`
+  - `checksum`
+  - `chunk_count`
+  - `created_at`
+  - `created_by`
+  - `is_current`
+
+### `GET /api/admin/knowledge/documents/{document_id}/versions/{version_id}`
+
+权限：
+
+- `operator`
+- `admin`
+- `super_admin`
+
+说明：
+
+- 返回单个历史版本的完整快照详情
+- 用于后台右侧版本详情面板展示
+
+常见错误：
+
+- `404`：文档不存在，或该版本不存在
+
+### `POST /api/admin/knowledge/documents/{document_id}/rollback`
+
+权限：
+
+- `admin`
+- `super_admin`
+
+请求体示例：
+
+```json
+{
+  "target_version_id": "ver_123456",
+  "reason": "restore stable release"
+}
+```
+
+说明：
+
+- 基于指定历史版本生成一个新的当前版本
+- 不会原地覆盖或修改旧历史版本
+- 成功后返回最新文档详情，并额外包含 `target_version_id` 与 `new_version_id`
+
+回滚行为边界：
+
+- 会回滚：文件内容、`filename`、`description`、`tags`
+- 不会自动回滚：`published`、`visible_to_frontend`、`allowed_roles`、`deleted`
+- 已删除文档不能直接回滚，必须先恢复再回滚
+
+常见错误：
+
+- `400`：目标版本不属于当前文档
+- `404`：目标文档或目标版本不存在
+- `409`：文档已删除，或历史快照不可用于回滚
+
+### `DELETE /api/admin/knowledge/documents/{document_id}`
+
+权限：
+
+- `admin`
+- `super_admin`
+
+行为：
+
+- 软删除文档
+- 文件从 `data/docs/` 移动到 `data/knowledge/trash/`
+- 删除对应向量分块
+- 将注册表状态更新为 `deleted=true`
+
+### `POST /api/admin/knowledge/documents/{document_id}/restore`
+
+权限：
+
+- `admin`
+- `super_admin`
+
+行为：
+
+- 从回收目录恢复文件
+- 重新建立向量分块
+- 恢复后强制设置：
+  - `deleted=false`
+  - `published=false`
+  - `visible_to_frontend=false`
 
 ## 后台系统设置
 
@@ -196,12 +378,6 @@
 
 - `admin`
 - `super_admin`
-
-响应：
-
-- `runtime_params`
-- `permission_model`
-- `frontend_policy`
 
 ### `POST /api/admin/settings/runtime`
 
@@ -224,12 +400,6 @@
   "enable_self_rag": false
 }
 ```
-
-说明：
-
-- 更新运行参数
-- 写入后台审计日志
-- 如果运行期 RAG 实例已经加载，则同步应用到实例
 
 ## 后台账号管理
 
@@ -266,10 +436,19 @@
 
 - `logs/admin_audit.jsonl`
 
-当前已覆盖的写入场景：
+当前知识库相关写入场景：
+
+- `create_document`
+- `replace_document`
+- `knowledge.version.rollback`
+- `update_document`
+- `update_access`
+- `delete_document`
+- `restore_document`
+
+其他主要写入场景：
 
 - 后台总览访问
 - 记忆偏好更新
 - 记忆清理
-- 知识库显隐 / 发布 / 角色范围更新
 - 运行参数更新

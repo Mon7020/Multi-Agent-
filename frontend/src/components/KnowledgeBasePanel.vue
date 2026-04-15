@@ -7,7 +7,7 @@
         <p>这里只展示当前账号角色允许访问且已经发布的知识文件。编辑、发布和显隐控制统一在后台完成。</p>
       </div>
       <button class="ghost-btn" @click="loadDocuments" :disabled="loading">
-        {{ loading ? '刷新中…' : '刷新列表' }}
+        {{ loading ? '刷新中...' : '刷新列表' }}
       </button>
     </article>
 
@@ -23,7 +23,7 @@
           <span class="pill">只读</span>
         </div>
 
-        <div v-if="loading && documents.length === 0" class="empty-inline">正在加载知识文件…</div>
+        <div v-if="loading && documents.length === 0" class="empty-inline">正在加载知识文件...</div>
         <div v-else-if="documents.length === 0" class="empty-inline">当前角色暂无可访问的知识文件。</div>
 
         <button
@@ -34,7 +34,7 @@
         >
           <div>
             <strong>{{ doc.filename }}</strong>
-            <p>{{ formatFileSize(doc.size) }} · {{ doc.chunk_count || 0 }} 个切片</p>
+            <p>{{ formatFileSize(doc.size) }} · {{ doc.chunk_count || 0 }} 个分块 · {{ doc.file_type }}</p>
           </div>
           <span>{{ formatDate(doc.update_time) }}</span>
         </button>
@@ -51,8 +51,14 @@
           </div>
         </header>
 
+        <div v-if="selectedDoc" class="metric-strip">
+          <span class="metric-pill">文件类型：{{ selectedDoc.file_type }}</span>
+          <span class="metric-pill">分块数量：{{ selectedDoc.chunk_count || 0 }} 个分块</span>
+          <span class="metric-pill">文档 ID：{{ selectedDoc.id }}</span>
+        </div>
+
         <div v-if="!selectedDoc" class="empty-panel">从左侧选择文档后即可查看内容。</div>
-        <div v-else-if="loadingContent" class="empty-panel">正在加载文档内容…</div>
+        <div v-else-if="loadingContent" class="empty-panel">正在加载文档内容...</div>
         <pre v-else class="content-block">{{ selectedContent || '该文档暂无可读内容。' }}</pre>
       </section>
     </div>
@@ -188,6 +194,23 @@ onMounted(() => {
   color: var(--accent);
   font-size: 12px;
   font-weight: 600;
+}
+
+.metric-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.metric-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 999px;
+  background: rgba(246, 241, 233, 0.78);
+  color: var(--text-secondary);
+  font-size: 12px;
 }
 
 .doc-item {
