@@ -259,6 +259,87 @@
 - `400`：文档已删除，不能直接替换
 - `409`：新文件名与其他活动文档冲突
 
+### `GET /api/admin/knowledge/documents/{document_id}/versions`
+
+权限：
+
+- `operator`
+- `admin`
+- `super_admin`
+
+说明：
+
+- 返回指定文档的版本历史列表
+- 列表按 `version_no` 倒序返回，便于后台优先查看最新版本
+- 响应包含 `current_version_id`，并在每条版本记录上标记是否为当前版本
+
+响应字段：
+
+- `document_id`
+- `current_version_id`
+- `versions`
+  - `version_id`
+  - `version_no`
+  - `action`
+  - `source_version_id`
+  - `filename`
+  - `checksum`
+  - `chunk_count`
+  - `created_at`
+  - `created_by`
+  - `is_current`
+
+### `GET /api/admin/knowledge/documents/{document_id}/versions/{version_id}`
+
+权限：
+
+- `operator`
+- `admin`
+- `super_admin`
+
+说明：
+
+- 返回单个历史版本的完整快照详情
+- 用于后台右侧版本详情面板展示
+
+常见错误：
+
+- `404`：文档不存在，或该版本不存在
+
+### `POST /api/admin/knowledge/documents/{document_id}/rollback`
+
+权限：
+
+- `admin`
+- `super_admin`
+
+请求体示例：
+
+```json
+{
+  "target_version_id": "ver_123456",
+  "reason": "restore stable release"
+}
+```
+
+说明：
+
+- 基于指定历史版本生成一个新的当前版本
+- 不会原地覆盖或修改旧历史版本
+- 成功后返回最新文档详情，并额外包含 `target_version_id` 与 `new_version_id`
+
+回滚行为边界：
+
+- 会回滚：文件内容、`filename`、`description`、`tags`
+- 不会自动回滚：`published`、`visible_to_frontend`、`allowed_roles`、`deleted`
+- 已删除文档不能直接回滚，必须先恢复再回滚
+
+常见错误：
+
+- `400`：目标版本不属于当前文档
+- `404`：目标文档或目标版本不存在
+- `409`：文档已删除，或历史快照不可用于回滚
+
 ### `DELETE /api/admin/knowledge/documents/{document_id}`
 
 权限：
@@ -359,6 +440,7 @@
 
 - `create_document`
 - `replace_document`
+- `knowledge.version.rollback`
 - `update_document`
 - `update_access`
 - `delete_document`

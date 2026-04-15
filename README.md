@@ -9,7 +9,8 @@
 截至 2026-04-15，项目已完成：
 
 - Phase 1：统一后台骨架、角色权限、记忆管理后台、只读前台设置摘要、知识库基础显隐控制
-- Phase 2（当前分支进行中）：知识库后台完整流程
+- Phase 2：知识库后台完整流程
+- Phase 3（当前分支进行中）：知识库版本历史与安全回滚
 
 当前后台知识库模块已经支持：
 
@@ -18,6 +19,8 @@
 - 新文档上传
 - 元数据编辑
 - 文件替换且保留同一 `document_id`
+- 版本历史查看
+- 基于历史版本生成新的安全回滚版本
 - 软删除与恢复
 - `chunk_count`、`checksum` 等运行指标展示
 - 前台只读知识库按角色、发布状态和显隐策略过滤
@@ -167,6 +170,9 @@ npm run admin
   - `POST /api/admin/knowledge/documents`
   - `PATCH /api/admin/knowledge/documents/{document_id}`
   - `POST /api/admin/knowledge/documents/{document_id}/replace`
+  - `GET /api/admin/knowledge/documents/{document_id}/versions`
+  - `GET /api/admin/knowledge/documents/{document_id}/versions/{version_id}`
+  - `POST /api/admin/knowledge/documents/{document_id}/rollback`
   - `DELETE /api/admin/knowledge/documents/{document_id}`
   - `POST /api/admin/knowledge/documents/{document_id}/restore`
 - 系统设置
@@ -184,6 +190,7 @@ npm run admin
 
 - 活动文件目录：`data/docs/`
 - 回收目录：`data/knowledge/trash/`
+- 历史目录：`data/knowledge/history/`
 - 注册表：`data/knowledge/registry.json`
 
 每条文档记录至少包含：
@@ -204,6 +211,12 @@ npm run admin
 - 恢复后默认 `published=false`
 - 恢复后默认 `visible_to_frontend=false`
 
+版本回滚策略：
+
+- 会回滚：文件内容、`filename`、`description`、`tags`
+- 不会自动回滚：`published`、`visible_to_frontend`、`allowed_roles`、`deleted`
+- 回滚会基于目标历史版本生成一个新的当前版本，不会直接改写旧版本
+
 ## 文档
 
 - 后台 API 文档：[docs/admin-api.md](./docs/admin-api.md)
@@ -211,6 +224,7 @@ npm run admin
 - 管理员指南：[docs/admin-admin-guide.md](./docs/admin-admin-guide.md)
 - Phase 1 测试报告：[docs/reports/2026-04-14-admin-backoffice-foundation-test-report.md](./docs/reports/2026-04-14-admin-backoffice-foundation-test-report.md)
 - Phase 2 测试报告：[docs/reports/2026-04-15-admin-knowledge-phase2-test-report.md](./docs/reports/2026-04-15-admin-knowledge-phase2-test-report.md)
+- Phase 3 测试报告：[docs/reports/2026-04-15-admin-knowledge-phase3-test-report.md](./docs/reports/2026-04-15-admin-knowledge-phase3-test-report.md)
 
 ## 测试与验证
 
@@ -220,6 +234,8 @@ npm run admin
 D:\agentlearn\miniconda\envs\test3\python.exe -m unittest tests.admin.test_knowledge_admin_registry -v
 D:\agentlearn\miniconda\envs\test3\python.exe -m unittest tests.admin.test_knowledge_admin_phase2_api -v
 D:\agentlearn\miniconda\envs\test3\python.exe -m unittest tests.admin.test_knowledge_visibility -v
+D:\agentlearn\miniconda\envs\test3\python.exe -m unittest tests.admin.test_knowledge_admin_versioning_service -v
+D:\agentlearn\miniconda\envs\test3\python.exe -m unittest tests.admin.test_knowledge_admin_versioning_api -v
 ```
 
 后台前端验证：
@@ -237,6 +253,7 @@ npm run build
 - 长期画像：`data/memory/long_term/`
 - 知识文件：`data/docs/`
 - 知识文件回收区：`data/knowledge/trash/`
+- 知识历史版本：`data/knowledge/history/`
 - 知识注册表：`data/knowledge/registry.json`
 - 后台审计日志：`logs/admin_audit.jsonl`
 
