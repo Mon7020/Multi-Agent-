@@ -502,6 +502,9 @@ async function restoreCurrent() {
   restoring.value = true
   try {
     const response = await knowledgeAdminApi.restoreDocument(selectedDocument.value.document_id)
+    if (filters.value.status === 'deleted') {
+      filters.value.status = 'active'
+    }
     setSuccess(`已恢复 ${response.data.filename}，默认保持隐藏和未发布`)
     await loadDocuments(response.data.document_id)
   } catch (error) {

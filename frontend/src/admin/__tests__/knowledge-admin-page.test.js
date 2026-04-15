@@ -21,31 +21,46 @@ vi.mock('../../auth/session.js', () => ({
   getAuthUser: vi.fn()
 }))
 
+function makeDocument(overrides = {}) {
+  return {
+    document_id: 'doc_alpha',
+    filename: 'alpha.txt',
+    file_type: '.txt',
+    size: 1024,
+    chunk_count: 4,
+    description: 'alpha doc',
+    tags: ['faq'],
+    published: true,
+    visible_to_frontend: true,
+    allowed_roles: ['user', 'admin'],
+    deleted: false,
+    updated_at: '2026-04-15T12:00:00',
+    ...overrides
+  }
+}
+
+function findButton(wrapper, label) {
+  const button = wrapper
+    .findAll('button')
+    .find((item) => item.text().includes(label))
+  if (!button) {
+    throw new Error(`button not found: ${label}`)
+  }
+  return button
+}
+
 describe('KnowledgeAdminPage', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    getAuthUser.mockReturnValue({ role: 'admin' })
+    window.confirm = vi.fn(() => true)
   })
 
   it('renders document metrics and keeps operator in read-only mode', async () => {
     getAuthUser.mockReturnValue({ role: 'operator' })
     knowledgeAdminApi.listDocuments.mockResolvedValue({
       data: {
-        documents: [
-          {
-            document_id: 'doc_alpha',
-            filename: 'alpha.txt',
-            file_type: '.txt',
-            size: 1024,
-            chunk_count: 4,
-            description: 'alpha doc',
-            tags: ['faq'],
-            published: true,
-            visible_to_frontend: true,
-            allowed_roles: ['user', 'admin'],
-            deleted: false,
-            updated_at: '2026-04-15T12:00:00'
-          }
-        ],
+        documents: [makeDocument()],
         total: 1
       }
     })
@@ -60,14 +75,12 @@ describe('KnowledgeAdminPage', () => {
   })
 
   it('lets admin filter deleted documents and exposes action buttons', async () => {
-    getAuthUser.mockReturnValue({ role: 'admin' })
     knowledgeAdminApi.listDocuments.mockResolvedValue({
       data: {
         documents: [
-          {
+          makeDocument({
             document_id: 'doc_deleted',
             filename: 'deleted.txt',
-            file_type: '.txt',
             size: 256,
             chunk_count: 1,
             description: 'deleted doc',
@@ -77,7 +90,7 @@ describe('KnowledgeAdminPage', () => {
             allowed_roles: ['admin'],
             deleted: true,
             updated_at: '2026-04-15T12:30:00'
-          }
+          })
         ],
         total: 1
       }
@@ -90,5 +103,203 @@ describe('KnowledgeAdminPage', () => {
     expect(wrapper.get('[data-testid="knowledge-upload-trigger"]').attributes('disabled')).toBeUndefined()
     expect(wrapper.text()).toContain('已删除')
     expect(wrapper.text()).toContain('恢复文档')
+  })
+
+  it('saves metadata and refreshes the list with updated values', async () => {
+    knowledgeAdminApi.listDocuments
+      .mockResolvedValueOnce({
+        data: {
+          documents: [makeDocument()],
+          total: 1
+        }
+      })
+      .mockResolvedValueOnce({
+        data: {
+          documents: [
+            makeDocument({
+              description: 'updated doc',
+              tags: ['release', 'faq'],
+              published: false,
+              visible_to_frontend: false
+            })
+          ],
+          total: 1
+        }
+      })
+
+    knowledgeAdminApi.updateDocument.mockResolvedValue({
+      data: {
+        document_id: 'doc_alpha',
+        filename: 'alpha.txt'
+      }
+    })
+
+    const wrapper = mount(KnowledgeAdminPage)
+    await flushPromises()
+
+    await wrapper.get('textarea').setValue('updated doc')
+    await wrapper.findAll('.form-field input[type="text"]')[0].setValue('release, faq')
+    await findButton(wrapper, '保存设置').trigger('click')
+    await flushPromises()
+
+    expect(knowledgeAdminApi.updateDocument).toHaveBeenCalledWith('doc_alpha', {
+      description: 'updated doc',
+      tags: ['release', 'faq'],
+      visible_to_frontend: true,
+      published: true,
+      allowed_roles: ['user', 'admin']
+    })
+    expect(knowledgeAdminApi.listDocuments).toHaveBeenCalledTimes(2)
+    expect(wrapper.get('textarea').element.value).toBe('updated doc')
+    expect(wrapper.text()).toContain('release、faq')
+    expect(wrapper.text()).toContain('已更新')
+  })
+
+  it('refreshes the active list after deleting a document', async () => {
+    knowledgeAdminApi.listDocuments
+      .mockResolvedValueOnce({
+        data: {
+          documents: [makeDocument()],
+          total: 1
+        }
+      })
+      .mockResolvedValueOnce({
+        data: {
+          documents: [],
+          total: 0
+        }
+      })
+
+    knowledgeAdminApi.deleteDocument.mockResolvedValue({
+      data: {
+        document_id: 'doc_alpha',
+        filename: 'alpha.txt',
+        deleted: true
+      }
+    })
+
+    const wrapper = mount(KnowledgeAdminPage)
+    await flushPromises()
+
+    await findButton(wrapper, '删除文档').trigger('click')
+    await flushPromises()
+
+    expect(window.confirm).toHaveBeenCalled()
+    expect(knowledgeAdminApi.deleteDocument).toHaveBeenCalledWith('doc_alpha')
+    expect(knowledgeAdminApi.listDocuments).toHaveBeenCalledTimes(2)
+    expect(wrapper.text()).toContain('当前筛选条件下没有可显示的知识文件')
+  })
+
+  it('restores a deleted document, resets its state, and switches back to active status', async () => {
+    knowledgeAdminApi.listDocuments
+      .mockResolvedValueOnce({
+        data: {
+          documents: [],
+          total: 0
+        }
+      })
+      .mockResolvedValueOnce({
+        data: {
+          documents: [
+            makeDocument({
+              document_id: 'doc_deleted',
+              filename: 'deleted.txt',
+              published: false,
+              visible_to_frontend: false,
+              deleted: true
+            })
+          ],
+          total: 1
+        }
+      })
+      .mockResolvedValueOnce({
+        data: {
+          documents: [
+            makeDocument({
+              document_id: 'doc_deleted',
+              filename: 'deleted.txt',
+              published: false,
+              visible_to_frontend: false,
+              deleted: false
+            })
+          ],
+          total: 1
+        }
+      })
+
+    knowledgeAdminApi.restoreDocument.mockResolvedValue({
+      data: {
+        document_id: 'doc_deleted',
+        filename: 'deleted.txt',
+        deleted: false,
+        published: false,
+        visible_to_frontend: false
+      }
+    })
+
+    const wrapper = mount(KnowledgeAdminPage)
+    await flushPromises()
+
+    await wrapper.get('[data-testid="knowledge-status-filter"]').setValue('deleted')
+    await flushPromises()
+    await findButton(wrapper, '恢复文档').trigger('click')
+    await flushPromises()
+
+    expect(knowledgeAdminApi.restoreDocument).toHaveBeenCalledWith('doc_deleted')
+    expect(knowledgeAdminApi.listDocuments).toHaveBeenCalledTimes(3)
+    expect(knowledgeAdminApi.listDocuments.mock.calls[2][0]).toEqual({
+      keyword: undefined,
+      status: 'active'
+    })
+    expect(wrapper.get('[data-testid="knowledge-status-filter"]').element.value).toBe('active')
+    expect(wrapper.text()).toContain('草稿')
+    expect(wrapper.text()).toContain('前台隐藏')
+  })
+
+  it('replaces a document and refreshes displayed metrics', async () => {
+    knowledgeAdminApi.listDocuments
+      .mockResolvedValueOnce({
+        data: {
+          documents: [makeDocument()],
+          total: 1
+        }
+      })
+      .mockResolvedValueOnce({
+        data: {
+          documents: [
+            makeDocument({
+              filename: 'alpha-v2.txt',
+              chunk_count: 2,
+              size: 2048
+            })
+          ],
+          total: 1
+        }
+      })
+
+    knowledgeAdminApi.replaceDocument.mockResolvedValue({
+      data: {
+        document_id: 'doc_alpha',
+        filename: 'alpha-v2.txt',
+        chunk_count: 2
+      }
+    })
+
+    const wrapper = mount(KnowledgeAdminPage)
+    await flushPromises()
+
+    const file = new File(['line-1\nline-2'], 'alpha-v2.txt', { type: 'text/plain' })
+    const replaceInput = wrapper.findAll('input[type="file"]')[1]
+    Object.defineProperty(replaceInput.element, 'files', {
+      value: [file],
+      configurable: true
+    })
+    await replaceInput.trigger('change')
+    await flushPromises()
+
+    expect(knowledgeAdminApi.replaceDocument).toHaveBeenCalledWith('doc_alpha', file)
+    expect(knowledgeAdminApi.listDocuments).toHaveBeenCalledTimes(2)
+    expect(wrapper.text()).toContain('alpha-v2.txt')
+    expect(wrapper.text()).toContain('2 个分块')
   })
 })
