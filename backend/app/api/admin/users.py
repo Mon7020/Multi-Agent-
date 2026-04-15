@@ -41,5 +41,5 @@ async def update_user_role(
     request: UpdateUserRoleRequest,
     user=Depends(require_admin_user("super_admin")),
 ):
-    updated = user_admin_service.update_role(user["id"], user_id, request.role)
+    updated = user_admin_service.update_role(user["id"], user["role"], user_id, request.role)
     return {"user_id": updated["id"], "role": updated["role"]}

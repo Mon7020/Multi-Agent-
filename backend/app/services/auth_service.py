@@ -333,6 +333,41 @@ class AuthService:
             raise AuthError("user not found")
         return user
 
+    def update_user_status(self, user_id: str, status: str) -> Dict[str, Any]:
+        if status not in {"active", "disabled"}:
+            raise AuthError("unsupported status")
+        if not user_id:
+            raise AuthError("user id is required")
+
+        placeholder = self._db_config.get("placeholder", "?")
+        now = int(time.time())
+
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                sql = f"""
+                    UPDATE users
+                    SET status = {placeholder}, updated_at = {placeholder}
+                    WHERE id = {placeholder}
+                    """
+                params = (status, now, user_id)
+                if self._db_type == "sqlite":
+                    cursor = conn.execute(sql, params)
+                    affected = cursor.rowcount
+                else:
+                    with conn.cursor() as cursor:
+                        affected = cursor.execute(sql, params)
+                if not affected:
+                    raise AuthError("user not found")
+                conn.commit()
+            finally:
+                conn.close()
+
+        user = self.get_user_by_id(user_id)
+        if not user:
+            raise AuthError("user not found")
+        return user
+
     def list_users(self) -> list[Dict[str, Any]]:
         placeholder = self._db_config.get("placeholder", "?")
         sql = f"""
