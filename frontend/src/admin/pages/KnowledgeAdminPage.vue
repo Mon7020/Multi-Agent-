@@ -275,7 +275,7 @@
                   @click="selectedVersion = version"
                 >
                   <strong>V{{ version.version_no }} · {{ version.filename }}</strong>
-                  <span>{{ version.action }}</span>
+                  <span>{{ formatVersionAction(version.action) }}</span>
                   <span>{{ version.is_current ? '当前版本' : formatDate(version.created_at) }}</span>
                 </button>
               </div>
@@ -289,8 +289,13 @@
                 <strong>{{ selectedVersion.filename }}</strong>
                 <p>{{ selectedVersion.description || '未设置描述' }}</p>
                 <p>{{ formatTags(selectedVersion.tags) }}</p>
-                <p>Checksum: {{ selectedVersion.checksum }}</p>
-                <p>{{ selectedVersion.chunk_count || 0 }} 个分块</p>
+                <p>操作类型：{{ formatVersionAction(selectedVersion.action) }}</p>
+                <p>文件大小：{{ formatFileSize(selectedVersion.size) }}</p>
+                <p>校验值：{{ selectedVersion.checksum }}</p>
+                <p>分块数量：{{ selectedVersion.chunk_count || 0 }} 个分块</p>
+                <p>来源版本：{{ selectedVersion.source_version_id || '—' }}</p>
+                <p>创建时间：{{ formatDate(selectedVersion.created_at) }}</p>
+                <p>创建人：{{ selectedVersion.created_by || '未知' }}</p>
                 <button
                   data-testid="knowledge-version-rollback"
                   class="solid-btn secondary"
@@ -397,6 +402,13 @@ function formatDate(value) {
 
 function formatTags(tags) {
   return Array.isArray(tags) && tags.length > 0 ? tags.join('、') : '未设置'
+}
+
+function formatVersionAction(action) {
+  if (action === 'create') return '创建'
+  if (action === 'replace') return '替换'
+  if (action === 'rollback') return '回滚'
+  return action || '未知'
 }
 
 function statusText(doc) {

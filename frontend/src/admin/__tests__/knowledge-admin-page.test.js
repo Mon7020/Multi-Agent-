@@ -371,6 +371,52 @@ describe('KnowledgeAdminPage', () => {
     expect(wrapper.get('[data-testid="knowledge-version-preview"]').text()).toContain('release doc')
   })
 
+  it('renders localized version details with complete metadata', async () => {
+    knowledgeAdminApi.listDocuments.mockResolvedValue({
+      data: {
+        documents: [makeDocument()],
+        total: 1
+      }
+    })
+    knowledgeAdminApi.listDocumentVersions.mockResolvedValue({
+      data: {
+        document_id: 'doc_alpha',
+        current_version_id: 'ver_current',
+        versions: [
+          makeVersion({
+            version_id: 'ver_rollback',
+            version_no: 3,
+            action: 'rollback',
+            source_version_id: 'ver_v1',
+            filename: 'alpha.txt',
+            description: 'rollback doc',
+            tags: ['faq'],
+            checksum: 'xyz999',
+            chunk_count: 4,
+            size: 1024,
+            created_at: '2026-04-15T12:10:00',
+            created_by: 'admin-3',
+            is_current: true
+          })
+        ]
+      }
+    })
+
+    const wrapper = mount(KnowledgeAdminPage)
+    await flushPromises()
+
+    const previewText = wrapper.get('[data-testid="knowledge-version-preview"]').text()
+    expect(previewText).toContain('版本快照')
+    expect(previewText).toContain('回滚')
+    expect(previewText).toContain('文件大小')
+    expect(previewText).toContain('1.0 KB')
+    expect(previewText).toContain('来源版本')
+    expect(previewText).toContain('ver_v1')
+    expect(previewText).toContain('创建人')
+    expect(previewText).toContain('admin-3')
+    expect(previewText).not.toContain('Checksum')
+  })
+
   it('rolls back a version and refreshes current metrics', async () => {
     knowledgeAdminApi.listDocuments
       .mockResolvedValueOnce({

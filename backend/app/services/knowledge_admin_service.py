@@ -143,8 +143,10 @@ class KnowledgeAdminService:
             return self._default_manifest(document_id)
         try:
             return json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return self._default_manifest(document_id)
+        except json.JSONDecodeError as exc:
+            raise KnowledgeConflictError("version manifest is corrupted") from exc
+        except OSError as exc:
+            raise KnowledgeConflictError("version manifest is unavailable") from exc
 
     def _save_manifest(self, document_id: str, manifest: Dict[str, Any]) -> None:
         self._manifest_path(document_id).write_text(
@@ -579,6 +581,7 @@ class KnowledgeAdminService:
         document_id, record = self._resolve_record(document_id, registry)
         if record.get("deleted"):
             raise ValueError("cannot replace deleted document")
+        self._load_manifest(document_id)
 
         safe = self._safe_filename(filename)
         conflict_id = self._find_document_id_by_filename(safe, registry)
@@ -879,9 +882,13 @@ class KnowledgeAdminService:
         if target_path != current_path and target_path.exists():
             raise FileExistsError(target_filename)
 
+        manifest_path = self._manifest_path(document_id)
+        registry_before = self.metadata_path.read_text(encoding="utf-8") if self.metadata_path.exists() else None
+        manifest_before = manifest_path.read_text(encoding="utf-8") if manifest_path.exists() else None
         current_source = str(current_path.resolve())
         current_bytes = current_path.read_bytes() if current_path.exists() else None
         snapshot_bytes = snapshot_path.read_bytes()
+        snapshot = None
 
         try:
             self._delete_chunks(current_source)
@@ -889,7 +896,77 @@ class KnowledgeAdminService:
                 current_path.unlink()
             target_path.write_bytes(snapshot_bytes)
             chunk_count = self._index_file(target_path)
+            now = self._now_iso()
+            rolled = self._build_record(
+                document_id=document_id,
+                file_path=target_path,
+                filename=target_filename,
+                legacy=current,
+            )
+            rolled.update(
+                {
+                    "current_version_id": current.get("current_version_id"),
+                    "description": target.get("description", ""),
+                    "tags": self._normalize_tags(target.get("tags", [])),
+                    "published": bool(current.get("published", True)),
+                    "visible_to_frontend": bool(current.get("visible_to_frontend", True)),
+                    "allowed_roles": self._normalize_roles(current.get("allowed_roles")),
+                    "deleted": bool(current.get("deleted", False)),
+                    "created_at": current.get("created_at"),
+                    "created_by": current.get("created_by"),
+                    "updated_at": now,
+                    "updated_by": actor_id,
+                    "deleted_at": current.get("deleted_at"),
+                    "deleted_by": current.get("deleted_by"),
+                    "chunk_count": chunk_count,
+                }
+            )
+            snapshot = self._append_version_snapshot(
+                record=rolled,
+                actor_id=actor_id,
+                action="rollback",
+                reason=reason,
+                source_version_id=target_version_id,
+            )
+            rolled["current_version_id"] = snapshot["version_id"]
+            registry["documents"][document_id] = rolled
+            self._save_registry(registry)
+            self.audit_log_service.write(
+                actor_id=actor_id,
+                module="knowledge",
+                action="knowledge.version.rollback",
+                target_type="document",
+                target_id=document_id,
+                result="success",
+                extra={
+                    "target_version_id": target_version_id,
+                    "new_version_id": snapshot["version_id"],
+                    "reason": reason,
+                    "old_checksum": current.get("checksum"),
+                    "new_checksum": rolled.get("checksum"),
+                    "old_chunk_count": current.get("chunk_count", 0),
+                    "new_chunk_count": rolled.get("chunk_count", 0),
+                },
+            )
+            return self._serialize_record(rolled)
         except Exception:
+            if snapshot is not None:
+                snapshot_dir = Path(snapshot["snapshot_storage_path"]).parent
+                if snapshot_dir.exists():
+                    for child in snapshot_dir.iterdir():
+                        child.unlink()
+                    snapshot_dir.rmdir()
+            if manifest_before is None:
+                if manifest_path.exists():
+                    manifest_path.unlink()
+            else:
+                manifest_path.write_text(manifest_before, encoding="utf-8")
+            if registry_before is None:
+                if self.metadata_path.exists():
+                    self.metadata_path.unlink()
+            else:
+                self.metadata_path.write_text(registry_before, encoding="utf-8")
+            self._delete_chunks(str(target_path.resolve()))
             if target_path.exists():
                 target_path.unlink()
             if current_bytes is not None:
@@ -899,60 +976,6 @@ class KnowledgeAdminService:
                 except Exception:
                     pass
             raise
-
-        now = self._now_iso()
-        rolled = self._build_record(
-            document_id=document_id,
-            file_path=target_path,
-            filename=target_filename,
-            legacy=current,
-        )
-        rolled.update(
-            {
-                "current_version_id": current.get("current_version_id"),
-                "description": target.get("description", ""),
-                "tags": self._normalize_tags(target.get("tags", [])),
-                "published": bool(current.get("published", True)),
-                "visible_to_frontend": bool(current.get("visible_to_frontend", True)),
-                "allowed_roles": self._normalize_roles(current.get("allowed_roles")),
-                "deleted": bool(current.get("deleted", False)),
-                "created_at": current.get("created_at"),
-                "created_by": current.get("created_by"),
-                "updated_at": now,
-                "updated_by": actor_id,
-                "deleted_at": current.get("deleted_at"),
-                "deleted_by": current.get("deleted_by"),
-                "chunk_count": chunk_count,
-            }
-        )
-        snapshot = self._append_version_snapshot(
-            record=rolled,
-            actor_id=actor_id,
-            action="rollback",
-            reason=reason,
-            source_version_id=target_version_id,
-        )
-        rolled["current_version_id"] = snapshot["version_id"]
-        registry["documents"][document_id] = rolled
-        self._save_registry(registry)
-        self.audit_log_service.write(
-            actor_id=actor_id,
-            module="knowledge",
-            action="knowledge.version.rollback",
-            target_type="document",
-            target_id=document_id,
-            result="success",
-            extra={
-                "target_version_id": target_version_id,
-                "new_version_id": snapshot["version_id"],
-                "reason": reason,
-                "old_checksum": current.get("checksum"),
-                "new_checksum": rolled.get("checksum"),
-                "old_chunk_count": current.get("chunk_count", 0),
-                "new_chunk_count": rolled.get("chunk_count", 0),
-            },
-        )
-        return self._serialize_record(rolled)
 
 
 knowledge_admin_service = KnowledgeAdminService()

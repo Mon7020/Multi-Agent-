@@ -29,7 +29,7 @@ D:\agentlearn\miniconda\envs\test3\python.exe -m unittest tests.admin.test_knowl
 
 结果：
 
-- `tests.admin.test_knowledge_admin_versioning_service`：3/3 通过
+- `tests.admin.test_knowledge_admin_versioning_service`：5/5 通过
 - `tests.admin.test_knowledge_admin_versioning_api`：1/1 通过
 
 覆盖点：
@@ -37,6 +37,8 @@ D:\agentlearn\miniconda\envs\test3\python.exe -m unittest tests.admin.test_knowl
 - 创建与替换会追加不可变版本快照
 - 回滚会生成新的当前版本，而不是直接覆写旧版本
 - 回滚后 `published`、`visible_to_frontend`、`allowed_roles`、`deleted` 保持不变
+- 回滚审计写入失败时，当前文件、注册表和版本历史不会落入脏状态
+- 损坏的 `manifest.json` 会被拒绝，不会被静默重置
 - 已删除文档必须先恢复才能回滚
 - `operator` 可查看版本历史，`admin` 可执行回滚
 
@@ -50,7 +52,7 @@ D:\agentlearn\miniconda\envs\test3\python.exe -m unittest tests.admin.test_knowl
 
 结果：
 
-- 共 12/12 通过
+- 共 14/14 通过
 
 覆盖点：
 
@@ -71,12 +73,12 @@ npm run test:admin -- src/admin/__tests__/knowledge-admin-page.test.js
 
 结果：
 
-- `src/admin/__tests__/knowledge-admin-page.test.js`：8/8 通过
+- `src/admin/__tests__/knowledge-admin-page.test.js`：9/9 通过
 
 覆盖点：
 
 - 版本历史列表加载
-- 版本详情预览
+- 版本详情预览与中文标签展示
 - 回滚成功后当前指标刷新
 - 回滚成功后版本列表与选中状态刷新
 
@@ -92,7 +94,7 @@ npm run build
 
 结果：
 
-- `vitest`：4 个测试文件、14 个测试全部通过
+- `vitest`：4 个测试文件、15 个测试全部通过
 - `vite build`：构建成功
 
 覆盖点：

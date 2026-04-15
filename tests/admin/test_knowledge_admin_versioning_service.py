@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
-from app.services.knowledge_admin_service import knowledge_admin_service
+from app.services.knowledge_admin_service import KnowledgeConflictError, knowledge_admin_service
 
 
 TEST_TMP_ROOT = Path(__file__).resolve().parents[2] / ".pytest_cache" / "knowledge-admin-versioning-service-tests"
@@ -155,6 +155,67 @@ class KnowledgeAdminVersioningServiceTest(unittest.TestCase):
                 target_version_id=created["current_version_id"],
                 actor_id="admin-3",
             )
+
+    def test_rollback_keeps_current_state_when_audit_write_fails(self):
+        created = knowledge_admin_service.create_document(
+            filename="alpha.txt",
+            content=b"line-1\nline-2\nline-3",
+            actor_id="admin-1",
+            description="alpha v1",
+            tags=["faq"],
+        )
+        replaced = knowledge_admin_service.replace_document(
+            created["document_id"],
+            filename="alpha-v2.txt",
+            content=b"line-1\nline-2",
+            actor_id="admin-2",
+        )
+        manifest_path = self.history_dir / created["document_id"] / "manifest.json"
+        before_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        before_current = knowledge_admin_service.get_document(created["document_id"])
+        before_bytes = (self.docs_dir / "alpha-v2.txt").read_bytes()
+
+        with patch.object(knowledge_admin_service.audit_log_service, "write", side_effect=OSError("audit offline")):
+            with self.assertRaisesRegex(OSError, "audit offline"):
+                knowledge_admin_service.rollback_document(
+                    created["document_id"],
+                    target_version_id=created["current_version_id"],
+                    actor_id="admin-3",
+                    reason="restore stable",
+                )
+
+        after_current = knowledge_admin_service.get_document(created["document_id"])
+        after_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(after_current["filename"], replaced["filename"])
+        self.assertEqual(after_current["checksum"], before_current["checksum"])
+        self.assertEqual(after_current["current_version_id"], before_current["current_version_id"])
+        self.assertEqual((self.docs_dir / "alpha-v2.txt").read_bytes(), before_bytes)
+        self.assertEqual(after_manifest, before_manifest)
+
+    def test_corrupted_manifest_is_rejected_instead_of_resetting_history(self):
+        created = knowledge_admin_service.create_document(
+            filename="alpha.txt",
+            content=b"line-1\nline-2\nline-3",
+            actor_id="admin-1",
+        )
+        manifest_path = self.history_dir / created["document_id"] / "manifest.json"
+        before_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest_path.write_text("{broken json", encoding="utf-8")
+
+        with self.assertRaisesRegex(KnowledgeConflictError, "manifest"):
+            knowledge_admin_service.list_document_versions(created["document_id"])
+
+        with self.assertRaisesRegex(KnowledgeConflictError, "manifest"):
+            knowledge_admin_service.replace_document(
+                created["document_id"],
+                filename="alpha-v2.txt",
+                content=b"line-1\nline-2",
+                actor_id="admin-2",
+            )
+
+        self.assertEqual((self.docs_dir / "alpha.txt").read_text(encoding="utf-8"), "line-1\nline-2\nline-3")
+        self.assertEqual(before_manifest["latest_version_no"], 1)
 
 
 if __name__ == "__main__":
