@@ -51,6 +51,14 @@ export const userAdminApi = {
     return adminApi.get('/users', { params })
   },
 
+  getUser(userId) {
+    return adminApi.get(`/users/${encodeURIComponent(userId)}`)
+  },
+
+  updateStatus(userId, status) {
+    return adminApi.patch(`/users/${encodeURIComponent(userId)}/status`, { status })
+  },
+
   updateRole(userId, role) {
     return adminApi.patch(`/users/${encodeURIComponent(userId)}/role`, { role })
   }
