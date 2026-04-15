@@ -1,8 +1,13 @@
 ﻿import axios from 'axios'
+import {
+  clearAuthSession,
+  getAuthToken,
+  getAuthUser,
+  setAuthSession,
+  updateAuthUser
+} from '../auth/session.js'
 
 const API_BASE = '/api/v1'
-const TOKEN_KEY = 'auth_token'
-const USER_KEY = 'auth_user'
 
 const api = axios.create({
   baseURL: API_BASE,
@@ -14,36 +19,6 @@ const api = axios.create({
 
 function encodeDocId(docId) {
   return encodeURIComponent(String(docId))
-}
-
-export function getAuthToken() {
-  return localStorage.getItem(TOKEN_KEY) || ''
-}
-
-export function getAuthUser() {
-  try {
-    const raw = localStorage.getItem(USER_KEY)
-    return raw ? JSON.parse(raw) : null
-  } catch {
-    return null
-  }
-}
-
-export function setAuthSession(session) {
-  localStorage.setItem(TOKEN_KEY, session.token)
-  localStorage.setItem(
-    USER_KEY,
-    JSON.stringify({
-      user_id: session.user_id,
-      username: session.username,
-      expires_at: session.expires_at
-    })
-  )
-}
-
-export function clearAuthSession() {
-  localStorage.removeItem(TOKEN_KEY)
-  localStorage.removeItem(USER_KEY)
 }
 
 api.interceptors.request.use((config) => {
@@ -179,5 +154,7 @@ export const knowledgeBaseApi = {
     return api.post('/knowledge-base/clear-cache')
   }
 }
+
+export { clearAuthSession, getAuthToken, getAuthUser, setAuthSession, updateAuthUser }
 
 export default api

@@ -8,11 +8,13 @@ from pathlib import Path
 from typing import List
 from urllib.parse import unquote
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
-from app.services.rag_runtime import get_rag_tool, rag_params_manager
-from tools.rag_tool import LocalCache
+from app.api.admin.dependencies import require_admin_user, require_authenticated_user
+from app.services.knowledge_admin_service import knowledge_admin_service
+from app.services.rag_runtime import get_loaded_rag_tool, get_rag_tool, rag_params_manager
+from app.services.settings_admin_service import settings_admin_service
 
 router = APIRouter()
 
@@ -69,7 +71,7 @@ def get_project_root() -> Path:
 
 
 def get_docs_dir() -> Path:
-    docs_dir = get_project_root() / "data" / "docs"
+    docs_dir = knowledge_admin_service.docs_dir
     docs_dir.mkdir(parents=True, exist_ok=True)
     return docs_dir
 
@@ -134,14 +136,14 @@ def _read_document_content(file_path: Path) -> str:
 
 
 @router.get("/knowledge-base", response_model=DocumentListResponse)
-async def list_documents():
+async def list_documents(current_user=Depends(require_authenticated_user())):
     docs_dir = get_docs_dir()
     all_files = sorted([p for p in docs_dir.iterdir() if p.is_file()], key=lambda p: p.name.lower())
 
     chunk_counts = {}
     try:
-        rag_tool = get_rag_tool()
-        if rag_tool.collection and rag_tool._db_available:
+        rag_tool = get_loaded_rag_tool()
+        if rag_tool and rag_tool.collection and rag_tool._db_available:
             all_docs = rag_tool.collection.get(include=["metadatas"])
             for metadata in (all_docs or {}).get("metadatas") or []:
                 source = metadata.get("source_file") or metadata.get("file_path", "")
@@ -155,6 +157,8 @@ async def list_documents():
     for file_path in all_files:
         stat = file_path.stat()
         filename = file_path.name
+        if not knowledge_admin_service.can_user_access_document(filename, current_user["role"]):
+            continue
         documents.append(
             DocumentInfo(
                 id=filename,
@@ -176,6 +180,7 @@ async def upload_document(
     file: UploadFile = File(...),
     chunk_size: int | None = Form(None),
     chunk_overlap: int | None = Form(None),
+    current_user=Depends(require_admin_user("admin", "super_admin")),
 ):
     filename = _validate_filename(file.filename or "")
     file_ext = Path(filename).suffix.lower()
@@ -228,10 +233,20 @@ async def upload_document(
         if file_path.exists():
             file_path.unlink()
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    finally:
+        if file_path.exists():
+            knowledge_admin_service.update_document_access(
+                filename,
+                visible_to_frontend=False,
+                published=False,
+                allowed_roles=["user", "operator", "admin", "super_admin"],
+                actor_id=current_user["id"],
+            )
 
 
 @router.get("/knowledge-base/params", response_model=RAGParamsResponse)
-async def get_rag_params():
+async def get_rag_params(current_user=Depends(require_authenticated_user())):
+    del current_user
     runtime_params = rag_params_manager.get_params()
 
     params = RAGParams(
@@ -246,7 +261,9 @@ async def get_rag_params():
     )
 
     try:
-        rag_tool = get_rag_tool()
+        rag_tool = get_loaded_rag_tool()
+        if rag_tool is None:
+            raise RuntimeError("rag tool not loaded")
         cache_stats = rag_tool.get_cache_stats()
         metrics = rag_tool.get_metrics()
     except Exception:
@@ -257,49 +274,21 @@ async def get_rag_params():
 
 
 @router.post("/knowledge-base/params")
-async def update_rag_params(params: RAGParams):
-    rag_params_manager.update_params(params.model_dump())
-
-    try:
-        rag_tool = get_rag_tool()
-
-        from langchain_text_splitters import RecursiveCharacterTextSplitter
-
-        rag_tool.text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=params.chunk_size,
-            chunk_overlap=params.chunk_overlap,
-            separators=["\n\n", "\n", ".", "?", "!", ",", "。", "？", "！", "，"],
-        )
-
-        if params.enable_cache:
-            if hasattr(rag_tool, "_create_redis_cache"):
-                try:
-                    rag_tool.cache = rag_tool._create_redis_cache()
-                except Exception:
-                    rag_tool.cache = LocalCache(max_size=1000, default_ttl=3600)
-            else:
-                rag_tool.cache = LocalCache(max_size=1000, default_ttl=3600)
-        else:
-            rag_tool.cache = LocalCache(max_size=1000, default_ttl=3600)
-
-        if not params.enable_rerank and hasattr(rag_tool, "reranker"):
-            rag_tool.reranker = None
-        elif params.enable_rerank and getattr(rag_tool, "reranker", None) is None:
-            from tools.rag_tool import Reranker
-
-            rag_tool.reranker = Reranker()
-    except Exception as exc:
-        print(f"[WARN] failed to apply runtime params into rag tool: {exc}")
-
+async def update_rag_params(
+    params: RAGParams,
+    current_user=Depends(require_admin_user("admin", "super_admin")),
+):
+    updated = settings_admin_service.update_runtime_params(params.model_dump(), actor_id=current_user["id"])
     return {
         "success": True,
         "message": "runtime params updated",
-        "params": params.model_dump(),
+        "params": updated,
     }
 
 
 @router.post("/knowledge-base/reload")
-async def reload_knowledge_base():
+async def reload_knowledge_base(current_user=Depends(require_admin_user("admin", "super_admin"))):
+    del current_user
     try:
         rag_tool = get_rag_tool()
         runtime_params = rag_params_manager.get_params()
@@ -340,7 +329,8 @@ async def reload_knowledge_base():
 
 
 @router.post("/knowledge-base/clear-cache")
-async def clear_cache():
+async def clear_cache(current_user=Depends(require_admin_user("admin", "super_admin"))):
+    del current_user
     try:
         rag_tool = get_rag_tool()
         rag_tool.clear_cache()
@@ -350,7 +340,8 @@ async def clear_cache():
 
 
 @router.get("/knowledge-base/cache/health")
-async def cache_health():
+async def cache_health(current_user=Depends(require_admin_user("admin", "super_admin"))):
+    del current_user
     try:
         rag_tool = get_rag_tool()
         cache = rag_tool.cache
@@ -384,8 +375,10 @@ async def cache_health():
 
 
 @router.get("/knowledge-base/{document_id}", response_model=DocumentContentResponse)
-async def get_document(document_id: str):
+async def get_document(document_id: str, current_user=Depends(require_authenticated_user())):
     file_path = _resolve_document_path(document_id)
+    if not knowledge_admin_service.can_user_access_document(file_path.name, current_user["role"]):
+        raise HTTPException(status_code=404, detail="document not found")
     content = _read_document_content(file_path)
     filename = file_path.name
 
@@ -393,7 +386,12 @@ async def get_document(document_id: str):
 
 
 @router.put("/knowledge-base/{document_id}")
-async def update_document(document_id: str, request: UpdateDocumentRequest):
+async def update_document(
+    document_id: str,
+    request: UpdateDocumentRequest,
+    current_user=Depends(require_admin_user("admin", "super_admin")),
+):
+    del current_user
     file_path = _resolve_document_path(document_id)
 
     if file_path.suffix.lower() != ".txt":
@@ -425,7 +423,8 @@ async def update_document(document_id: str, request: UpdateDocumentRequest):
 
 
 @router.delete("/knowledge-base/{document_id}")
-async def delete_document(document_id: str):
+async def delete_document(document_id: str, current_user=Depends(require_admin_user("admin", "super_admin"))):
+    del current_user
     file_path = _resolve_document_path(document_id)
 
     try:

@@ -7,6 +7,7 @@ import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from app.services.audit_log_service import AuditLogService
 from app.services.auth_service import auth_service
 from core.logger import LoggerManager
 from core.session_context import session_context_manager
@@ -17,10 +18,27 @@ logger = LoggerManager.get_logger("memory_admin")
 
 class MemoryAdminService:
     def __init__(self) -> None:
-        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-        self.context_storage_path = os.path.join(project_root, "data", "memory", "session_context")
+        self.reconfigure()
+
+    @staticmethod
+    def _project_root() -> str:
+        return os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+
+    def reconfigure(
+        self,
+        context_storage_path: Optional[str] = None,
+        long_term_storage_path: Optional[str] = None,
+        audit_storage_path: Optional[str] = None,
+    ) -> None:
+        project_root = self._project_root()
+        self.context_storage_path = context_storage_path or os.path.join(project_root, "data", "memory", "session_context")
         os.makedirs(self.context_storage_path, exist_ok=True)
-        self.long_term_memory = LongTermMemoryManager()
+        self.long_term_memory = LongTermMemoryManager(
+            storage_path=long_term_storage_path or os.path.join(project_root, "data", "memory", "long_term")
+        )
+        self.audit_log_service = AuditLogService(
+            storage_path=audit_storage_path or os.path.join(project_root, "logs", "admin_audit.jsonl")
+        )
 
     def _context_path(self, user_id: str) -> str:
         return os.path.join(self.context_storage_path, f"{user_id}_context.json")
@@ -79,7 +97,14 @@ class MemoryAdminService:
             return None
         return user.get("username")
 
-    def list_users(self) -> List[Dict[str, Any]]:
+    @staticmethod
+    def _matches_query(record: Dict[str, Any], query: str) -> bool:
+        keyword = query.strip().lower()
+        if not keyword:
+            return True
+        return keyword in (record.get("user_id") or "").lower() or keyword in (record.get("username") or "").lower()
+
+    def list_users(self, query: Optional[str] = None, active_only: Optional[bool] = None) -> List[Dict[str, Any]]:
         user_ids = set(session_context_manager.list_user_ids())
         user_ids.update(self._list_user_ids_from_dir(self.context_storage_path, "_context.json"))
         user_ids.update(self._list_user_ids_from_dir(self.long_term_memory.storage_path, "_profile.json"))
@@ -103,6 +128,10 @@ class MemoryAdminService:
                     "preference_count": len((long_term_profile.get("preferences") or {}).keys()),
                 }
             )
+        if query:
+            users = [user for user in users if self._matches_query(user, query)]
+        if active_only is not None:
+            users = [user for user in users if user["active_in_memory"] is active_only]
         return users
 
     def get_user_details(self, user_id: str) -> Dict[str, Any]:
@@ -116,7 +145,34 @@ class MemoryAdminService:
             "long_term_profile": long_term_profile,
         }
 
-    def update_preference(self, user_id: str, key: str, value: Any, confidence: float = 1.0) -> Dict[str, Any]:
+    def _write_audit(
+        self,
+        actor_id: Optional[str],
+        action: str,
+        user_id: str,
+        result: str,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        if not actor_id:
+            return
+        self.audit_log_service.write(
+            actor_id=actor_id,
+            module="memory",
+            action=action,
+            target_type="user_memory",
+            target_id=user_id,
+            result=result,
+            extra=extra,
+        )
+
+    def update_preference(
+        self,
+        user_id: str,
+        key: str,
+        value: Any,
+        confidence: float = 1.0,
+        actor_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         self.long_term_memory.update_preference(
             user_id=user_id,
             key=key,
@@ -138,27 +194,39 @@ class MemoryAdminService:
                 context_snapshot["updated_at"] = datetime.now().isoformat()
                 self._write_json(self._context_path(user_id), context_snapshot)
 
-        return self.get_user_details(user_id)
+        details = self.get_user_details(user_id)
+        self._write_audit(
+            actor_id=actor_id,
+            action="update_preference",
+            user_id=user_id,
+            result="success",
+            extra={"key": key, "confidence": confidence},
+        )
+        return details
 
-    def clear_user_context(self, user_id: str) -> bool:
+    def clear_user_context(self, user_id: str, actor_id: Optional[str] = None) -> bool:
         active_context = session_context_manager.get_session_by_user(user_id)
         if active_context is not None:
-            return session_context_manager.delete_session(
+            success = session_context_manager.delete_session(
                 active_context.session_id,
                 user_id=user_id,
                 remove_persisted=True,
             )
+            self._write_audit(actor_id=actor_id, action="clear_context", user_id=user_id, result="success" if success else "failed")
+            return success
 
         path = self._context_path(user_id)
+        success = True
         if os.path.exists(path):
             try:
                 os.remove(path)
             except OSError as exc:
                 logger.error(f"[MemoryAdmin] failed to remove context for {user_id}: {exc}")
-                return False
-        return True
+                success = False
+        self._write_audit(actor_id=actor_id, action="clear_context", user_id=user_id, result="success" if success else "failed")
+        return success
 
-    def clear_user_all_memory(self, user_id: str) -> bool:
+    def clear_user_all_memory(self, user_id: str, actor_id: Optional[str] = None) -> bool:
         context_cleared = self.clear_user_context(user_id)
 
         self.long_term_memory.user_profiles.pop(user_id, None)
@@ -171,7 +239,9 @@ class MemoryAdminService:
                 logger.error(f"[MemoryAdmin] failed to remove profile for {user_id}: {exc}")
                 profile_cleared = False
 
-        return context_cleared and profile_cleared
+        success = context_cleared and profile_cleared
+        self._write_audit(actor_id=actor_id, action="clear_all", user_id=user_id, result="success" if success else "failed")
+        return success
 
 
 memory_admin_service = MemoryAdminService()

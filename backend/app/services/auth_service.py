@@ -25,15 +25,23 @@ class AuthError(Exception):
 
 class AuthService:
     def __init__(self, storage_path: Optional[str] = None, database_url: Optional[str] = None):
-        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+        self._project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
         self._lock = threading.RLock()
         self.secret = os.getenv("APP_AUTH_SECRET", "change-this-auth-secret")
         self.default_token_ttl_seconds = 7 * 24 * 3600
 
         configured_url = database_url or os.getenv("DATABASE_URL") or settings.database_url
-        self._db_type, self._db_config = self._resolve_database_url(configured_url, project_root)
+        self._database_url = configured_url
+        self._db_type, self._db_config = self._resolve_database_url(configured_url, self._project_root)
         self._ensure_schema()
+
+    def reconfigure(self, database_url: Optional[str] = None) -> None:
+        configured_url = database_url or os.getenv("DATABASE_URL") or settings.database_url
+        with self._lock:
+            self._database_url = configured_url
+            self._db_type, self._db_config = self._resolve_database_url(configured_url, self._project_root)
+            self._ensure_schema()
 
     @staticmethod
     def _resolve_database_url(url: str, project_root: str) -> Tuple[str, Dict[str, Any]]:
@@ -41,6 +49,8 @@ class AuthService:
         scheme = parsed.scheme
         if scheme in ("sqlite", "sqlite3"):
             raw_path = parsed.path or ":memory:"
+            if len(raw_path) > 2 and raw_path[0] == "/" and raw_path[2] == ":":
+                raw_path = raw_path[1:]
             if raw_path.startswith("/") and not (len(raw_path) > 2 and raw_path[2] == ":"):
                 raw_path = raw_path.lstrip("/")
             if raw_path in ("", ":memory:"):
@@ -104,7 +114,11 @@ class AuthService:
                     password_salt TEXT NOT NULL,
                     password_hash TEXT NOT NULL,
                     created_at INTEGER NOT NULL,
-                    status TEXT NOT NULL
+                    status VARCHAR(32) NOT NULL DEFAULT 'active',
+                    role VARCHAR(32) NOT NULL DEFAULT 'user',
+                    last_login_at INTEGER,
+                    password_updated_at INTEGER,
+                    updated_at INTEGER
                 )
                 """
             if self._db_type == "sqlite":
@@ -112,9 +126,41 @@ class AuthService:
             else:
                 with conn.cursor() as cursor:
                     cursor.execute(sql)
+            self._ensure_user_columns(conn)
             conn.commit()
         finally:
             conn.close()
+
+    def _ensure_user_columns(self, conn) -> None:
+        columns = {
+            "role": "VARCHAR(32) NOT NULL DEFAULT 'user'",
+            "last_login_at": "INTEGER",
+            "password_updated_at": "INTEGER",
+            "updated_at": "INTEGER",
+        }
+        existing = self._list_columns(conn, "users")
+        for name, ddl in columns.items():
+            if name not in existing:
+                self._ensure_column(conn, "users", name, ddl)
+
+    def _list_columns(self, conn, table_name: str) -> set[str]:
+        if self._db_type == "sqlite":
+            rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+            return {row["name"] for row in rows}
+
+        with conn.cursor() as cursor:
+            cursor.execute(f"SHOW COLUMNS FROM {table_name}")
+            rows = cursor.fetchall()
+        return {row["Field"] for row in rows}
+
+    def _ensure_column(self, conn, table_name: str, column_name: str, ddl: str) -> None:
+        sql = f"ALTER TABLE {table_name} ADD COLUMN {column_name} {ddl}"
+        if self._db_type == "sqlite":
+            conn.execute(sql)
+            return
+
+        with conn.cursor() as cursor:
+            cursor.execute(sql)
 
     @staticmethod
     def _normalize_username(username: str) -> str:
@@ -150,7 +196,7 @@ class AuthService:
     def _fetch_user_by_username(self, conn, username: str) -> Optional[Dict[str, Any]]:
         placeholder = self._db_config.get("placeholder", "?")
         sql = f"""
-            SELECT id, username, password_salt, password_hash, created_at, status
+            SELECT id, username, password_salt, password_hash, created_at, status, role, last_login_at, password_updated_at, updated_at
             FROM users
             WHERE username = {placeholder}
             LIMIT 1
@@ -168,7 +214,7 @@ class AuthService:
     def _fetch_user_by_id(self, conn, user_id: str) -> Optional[Dict[str, Any]]:
         placeholder = self._db_config.get("placeholder", "?")
         sql = f"""
-            SELECT id, username, created_at, status
+            SELECT id, username, created_at, status, role, last_login_at, password_updated_at, updated_at
             FROM users
             WHERE id = {placeholder}
             LIMIT 1
@@ -202,10 +248,43 @@ class AuthService:
                 placeholder = self._db_config.get("placeholder", "?")
 
                 sql = f"""
-                    INSERT INTO users (id, username, password_salt, password_hash, created_at, status)
-                    VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
+                    INSERT INTO users (
+                        id,
+                        username,
+                        password_salt,
+                        password_hash,
+                        created_at,
+                        status,
+                        role,
+                        last_login_at,
+                        password_updated_at,
+                        updated_at
+                    )
+                    VALUES (
+                        {placeholder},
+                        {placeholder},
+                        {placeholder},
+                        {placeholder},
+                        {placeholder},
+                        {placeholder},
+                        {placeholder},
+                        {placeholder},
+                        {placeholder},
+                        {placeholder}
+                    )
                     """
-                params = (user_id, normalized, salt, password_hash, created_at, "active")
+                params = (
+                    user_id,
+                    normalized,
+                    salt,
+                    password_hash,
+                    created_at,
+                    "active",
+                    "user",
+                    None,
+                    created_at,
+                    created_at,
+                )
 
                 if self._db_type == "sqlite":
                     conn.execute(sql, params)
@@ -218,6 +297,63 @@ class AuthService:
                 conn.close()
 
         return {"id": user_id, "username": normalized, "created_at": created_at}
+
+    def update_user_role(self, user_id: str, role: str) -> Dict[str, Any]:
+        if role not in {"user", "operator", "admin", "super_admin"}:
+            raise AuthError("unsupported role")
+        if not user_id:
+            raise AuthError("user id is required")
+
+        placeholder = self._db_config.get("placeholder", "?")
+        now = int(time.time())
+
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                sql = f"""
+                    UPDATE users
+                    SET role = {placeholder}, updated_at = {placeholder}
+                    WHERE id = {placeholder}
+                    """
+                params = (role, now, user_id)
+                if self._db_type == "sqlite":
+                    cursor = conn.execute(sql, params)
+                    affected = cursor.rowcount
+                else:
+                    with conn.cursor() as cursor:
+                        affected = cursor.execute(sql, params)
+                if not affected:
+                    raise AuthError("user not found")
+                conn.commit()
+            finally:
+                conn.close()
+
+        user = self.get_user_by_id(user_id)
+        if not user:
+            raise AuthError("user not found")
+        return user
+
+    def list_users(self) -> list[Dict[str, Any]]:
+        placeholder = self._db_config.get("placeholder", "?")
+        sql = f"""
+            SELECT id, username, created_at, status, role, last_login_at, password_updated_at, updated_at
+            FROM users
+            ORDER BY created_at ASC, username ASC
+            """
+
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                if self._db_type == "sqlite":
+                    rows = conn.execute(sql).fetchall()
+                else:
+                    with conn.cursor() as cursor:
+                        cursor.execute(sql)
+                        rows = cursor.fetchall()
+            finally:
+                conn.close()
+
+        return [dict(row) for row in rows]
 
     def authenticate(self, username: str, password: str) -> Dict[str, Any]:
         normalized = self._normalize_username(username)
@@ -261,6 +397,10 @@ class AuthService:
             "username": user["username"],
             "created_at": user.get("created_at"),
             "status": user.get("status"),
+            "role": user.get("role", "user"),
+            "last_login_at": user.get("last_login_at"),
+            "password_updated_at": user.get("password_updated_at"),
+            "updated_at": user.get("updated_at"),
         }
 
     def create_token(self, user_id: str, username: str, ttl_seconds: Optional[int] = None) -> Dict[str, Any]:
@@ -321,9 +461,16 @@ class AuthService:
     def get_user_from_authorization(self, authorization: Optional[str]) -> Dict[str, Any]:
         token = self.parse_bearer_token(authorization)
         payload = self.verify_token(token)
+        user = self.get_user_by_id(payload.get("sub"))
+        if not user:
+            raise AuthError("user not found")
+        if user.get("status") != "active":
+            raise AuthError("user is disabled")
         return {
-            "id": payload.get("sub"),
-            "username": payload.get("username"),
+            "id": user["id"],
+            "username": user["username"],
+            "role": user.get("role", "user"),
+            "status": user.get("status", "active"),
             "exp": payload.get("exp"),
             "token": token,
         }

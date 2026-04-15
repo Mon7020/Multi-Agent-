@@ -105,6 +105,8 @@ data/auth/users.json
 tests/*
 !tests/admin/
 !tests/admin/**
+tests/admin/**/__pycache__/
+tests/admin/**/*.py[cod]
 mianshi/
 evaluation/
 monitoring/

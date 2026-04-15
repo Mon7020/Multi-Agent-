@@ -18,6 +18,11 @@ def get_rag_tool():
     return _rag_tool_instance
 
 
+def get_loaded_rag_tool():
+    """Return the loaded RAG tool instance without triggering initialization."""
+    return _rag_tool_instance
+
+
 class RAGParamsManager:
     """In-memory runtime parameter manager for RAG."""
 

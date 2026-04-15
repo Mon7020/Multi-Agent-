@@ -1,33 +1,42 @@
 # MultiTaskQAAssistant
 
-基于 FastAPI + LangChain 的多 Agent 智能客服项目，包含对话、知识库、技能统计、用户认证，以及独立的三层记忆管理后台。
+基于 FastAPI + LangChain 的多模块智能客服项目，当前包含用户前台、统一后台管理系统、三层记忆能力、知识库与运行参数管理、用户认证和角色权限控制。
 
-如果你只想快速启动项目，直接看 [V3_QUICKSTART.md](./V3_QUICKSTART.md)。
+如果你只想先把项目跑起来，直接看 [V3_QUICKSTART.md](./V3_QUICKSTART.md)。
 
-## 当前功能
+## 当前阶段
 
-- 用户前台：登录、对话、知识库、设置页
-- 用户认证：注册、登录、Token 鉴权、当前用户信息查询
-- 三层记忆：短期记忆、中期压缩摘要、长期用户画像
-- 记忆管理后台：查看用户记忆、写入偏好、清除上下文、清除全部记忆
-- 后端双服务：用户 API 使用 `8000`，管理 API 使用 `8001`
-- 前端双入口：用户前台使用 `5173`，管理后台使用 `5174/admin.html`
+2026-04-14 的 Phase 1 已完成以下后台基础能力：
 
-## 最近同步
+- 统一后台入口与路由壳层
+- 角色模型：`super_admin`、`admin`、`operator`、`user`
+- 后台仪表盘、记忆管理、知识库管理、系统设置、账号管理
+- 记忆管理后台审计日志、服务端搜索筛选和全中文界面
+- 前台知识库改为只读展示，仅显示“已发布 + 前台可见 + 当前角色允许访问”的文件
+- 前台设置改为只读摘要，运行参数与权限策略统一迁移到后台
+- 后台可控制知识文件的“前台显示 / 隐藏”“草稿 / 已发布”“允许访问角色”
 
-### 2026-04-14
+## 系统结构
 
-- 三层记忆已按 `user_id` 持久化绑定，不再只依赖临时 `session_id`
-- 用户上下文快照落盘到 `data/memory/session_context/{user_id}_context.json`
-- 长期用户画像落盘到 `data/memory/long_term/{user_id}_profile.json`
-- 新增独立记忆管理后台 API，端口 `8001`
-- 新增独立记忆管理后台前端，端口 `5174`，页面为 `http://localhost:5174/admin.html`
-- 记忆管理后台页面已全部汉化，指标、按钮、状态、提示文案均为中文
-- 后端统一通过 `python backend/run_backends.py` 同时启动两个服务
+- 用户 API：`http://localhost:8000`
+- 后台 API：`http://localhost:8001`
+- 用户前台：`http://localhost:5173`
+- 后台前端：`http://localhost:5174/admin.html`
+
+主要模块：
+
+- 用户前台
+  - 登录、对话、只读知识库、只读设置摘要
+- 后台管理系统
+  - 总览、记忆管理、知识库管理、系统设置、账号管理
+- 记忆系统
+  - 短期记忆、中期摘要、长期偏好画像
+- 权限系统
+  - Token 鉴权、角色判定、后台路由守卫、服务端权限校验
 
 ## 环境准备
 
-建议使用 Conda：
+推荐使用 Conda：
 
 ```bash
 conda create -n test3 python=3.10 -y
@@ -35,7 +44,7 @@ conda activate test3
 pip install -r requirements.txt -r backend/requirements.txt
 ```
 
-如果没有 `.env`，先复制：
+如果还没有 `.env`，先复制：
 
 ```bash
 # Windows PowerShell
@@ -45,7 +54,7 @@ Copy-Item .env.example .env
 cp .env.example .env
 ```
 
-至少需要确认这些环境变量：
+至少确认这些变量已经填写：
 
 - `OPENAI_API_KEY`
 - `DEEPSEEK_API_KEY`
@@ -53,21 +62,15 @@ cp .env.example .env
 - `TAVILY_API_KEY`
 - `DATABASE_URL`
 
-默认数据库是：
+默认数据库：
 
 ```env
 DATABASE_URL=sqlite:///data/auth/app.db
 ```
 
-如果改用 MySQL，可写成：
-
-```env
-DATABASE_URL=mysql+pymysql://user:password@host:port/database?charset=utf8mb4
-```
-
 ## 启动方式
 
-### 1. 启动后端
+### 1. 启动双后端
 
 在项目根目录执行：
 
@@ -75,19 +78,12 @@ DATABASE_URL=mysql+pymysql://user:password@host:port/database?charset=utf8mb4
 python backend/run_backends.py
 ```
 
-也可以进入 `backend` 目录执行：
-
-```bash
-cd backend
-python run_backends.py
-```
-
-启动后可访问：
+启动成功后可访问：
 
 - 用户 API 文档：`http://localhost:8000/docs`
 - 用户健康检查：`http://localhost:8000/api/v1/health`
-- 管理 API 文档：`http://localhost:8001/docs`
-- 管理健康检查：`http://localhost:8001/health`
+- 后台 API 文档：`http://localhost:8001/docs`
+- 后台健康检查：`http://localhost:8001/health`
 
 ### 2. 启动用户前台
 
@@ -99,7 +95,7 @@ npm run dev
 
 访问地址：`http://localhost:5173`
 
-### 3. 启动记忆管理后台前端
+### 3. 启动后台前端
 
 仍然在 `frontend` 目录执行：
 
@@ -111,19 +107,25 @@ npm run admin
 
 说明：
 
-- `npm run admin` 会使用 Vite 在 `5174` 端口启动独立页面
-- 该命令包含 `--open /admin.html`，默认会自动打开管理后台页面
-- 开发态下，`/api` 会代理到 `8000`，`/api/admin` 会代理到 `8001`
+- `npm run admin` 使用 Vite 在 `5174` 端口启动后台页面
+- 开发态下，`/api` 代理到 `8000`，`/api/admin` 代理到 `8001`
 
-## 推荐启动顺序
+## 角色说明
 
-1. `python backend/run_backends.py`
-2. `cd frontend && npm run dev`
-3. `cd frontend && npm run admin`
+- `super_admin`
+  - 全部后台能力
+  - 可调整角色与系统运行参数
+- `admin`
+  - 可管理记忆、知识库、设置、账号
+- `operator`
+  - 可进入后台查看总览、记忆、知识库
+  - 对知识库配置为只读，不可修改发布和显隐
+- `user`
+  - 仅可访问用户前台
 
-## 主要接口
+## 核心接口
 
-### 认证
+### 用户认证
 
 - `POST /api/v1/auth/register`
 - `POST /api/v1/auth/login`
@@ -131,83 +133,77 @@ npm run admin
 - `GET /api/v1/auth/memory`
 - `POST /api/v1/auth/memory/resolve`
 
-所有受保护接口都需要：
-
-```http
-Authorization: Bearer <token>
-```
-
-### 对话
-
-- `POST /api/v1/chat`
-- `POST /api/v1/chat/stream`
-- `GET /api/v1/chat/history/{session_id}`
-- `DELETE /api/v1/chat/history/{session_id}`
-
-### 技能
-
-- `GET /api/v1/skills`
-- `GET /api/v1/skills/stats`
-- `GET /api/v1/skills/{skill_name}`
-
-### 知识库
+### 用户前台知识库
 
 - `GET /api/v1/knowledge-base`
-- `POST /api/v1/knowledge-base/upload`
 - `GET /api/v1/knowledge-base/{document_id}`
-- `PUT /api/v1/knowledge-base/{document_id}`
-- `DELETE /api/v1/knowledge-base/{document_id}`
 - `GET /api/v1/knowledge-base/params`
-- `POST /api/v1/knowledge-base/params`
-- `POST /api/v1/knowledge-base/reload`
-- `POST /api/v1/knowledge-base/clear-cache`
-- `GET /api/v1/knowledge-base/cache/health`
 
-### 记忆管理后台
+说明：
 
-- `GET /api/admin/memory/users`
-- `GET /api/admin/memory/users/{user_id}`
-- `POST /api/admin/memory/users/{user_id}/preferences`
-- `DELETE /api/admin/memory/users/{user_id}/context`
-- `DELETE /api/admin/memory/users/{user_id}`
+- 列表和详情都要求登录
+- 只返回当前角色允许访问且已发布、允许前台显示的文件
 
-用途：
+### 后台接口
 
-- 查看某个用户的短期记忆、中期摘要、长期画像
-- 从后台直接写入长期偏好
-- 清除已持久化上下文
-- 清除某个用户的全部记忆
+- 总览
+  - `GET /api/admin/dashboard/summary`
+- 记忆管理
+  - `GET /api/admin/memory/users`
+  - `GET /api/admin/memory/users/{user_id}`
+  - `POST /api/admin/memory/users/{user_id}/preferences`
+  - `DELETE /api/admin/memory/users/{user_id}/context`
+  - `DELETE /api/admin/memory/users/{user_id}`
+- 知识库管理
+  - `GET /api/admin/knowledge/documents`
+  - `PATCH /api/admin/knowledge/documents/{document_id}`
+- 系统设置
+  - `GET /api/admin/settings/summary`
+  - `POST /api/admin/settings/runtime`
+- 账号管理
+  - `GET /api/admin/users`
+  - `PATCH /api/admin/users/{user_id}/role`
 
-## 记忆后台说明
+更详细的接口说明见 [docs/admin-api.md](./docs/admin-api.md)。
 
-管理后台页面地址：
+## 文档
 
-- 开发态：`http://localhost:5174/admin.html`
+- 后台 API 文档：[docs/admin-api.md](./docs/admin-api.md)
+- 用户手册：[docs/admin-user-guide.md](./docs/admin-user-guide.md)
+- 管理员指南：[docs/admin-admin-guide.md](./docs/admin-admin-guide.md)
+- Phase 1 测试报告：[docs/reports/2026-04-14-admin-backoffice-foundation-test-report.md](./docs/reports/2026-04-14-admin-backoffice-foundation-test-report.md)
 
-当前页面包含：
+## 测试与验证
 
-- 用户列表与在线状态
-- 核心指标卡片
-- 长期画像查看
-- 上下文元数据查看
-- 最近对话查看
-- 中期记忆摘要查看
-- 偏好修正与记忆清理操作
+后端验证：
 
-当前界面文案已统一为中文，包括：
+```bash
+D:\agentlearn\miniconda\envs\test3\python.exe -m unittest \
+  tests.admin.test_auth_role_foundation \
+  tests.admin.test_admin_access_and_audit \
+  tests.admin.test_user_admin_api \
+  tests.admin.test_memory_admin_api \
+  tests.admin.test_knowledge_visibility \
+  tests.admin.test_settings_admin_api \
+  tests.test_memory_admin_localization -v
+```
 
-- 指标名称
-- 状态标签
-- 操作按钮
-- 空状态提示
-- 成功和失败消息
-- 确认弹窗
+前端验证：
 
-## 数据落盘位置
+```bash
+cd frontend
+npm run test:admin
+npm run build
+```
+
+## 数据目录
 
 - 认证数据库：`data/auth/app.db`
-- 会话上下文：`data/memory/session_context/`
-- 长期用户画像：`data/memory/long_term/`
+- 记忆上下文：`data/memory/session_context/`
+- 长期画像：`data/memory/long_term/`
+- 知识文件：`data/docs/`
+- 知识文件权限元数据：`data/knowledge/registry.json`
+- 后台审计日志：`logs/admin_audit.jsonl`
 
 ## 常见问题
 
@@ -219,14 +215,13 @@ Authorization: Bearer <token>
 python backend/run_backends.py
 ```
 
-### `No module named 'uuid_utils'`
+### 后台页面可以打开，但接口失败
 
-重新安装依赖：
+确认以下三项：
 
-```bash
-conda activate test3
-pip install -r requirements.txt -r backend/requirements.txt
-```
+- `python backend/run_backends.py` 已正常启动
+- `http://localhost:8001/docs` 可访问
+- 后台前端是通过 `npm run admin` 启动，而不是直接打开静态文件
 
 ### 端口被占用
 
