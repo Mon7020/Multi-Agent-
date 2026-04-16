@@ -97,6 +97,9 @@ debug_output.txt
 data/memory/long_term/*_profile.json
 data/memory/session_context/*_context.json
 data/auth/users.json
+data/knowledge/registry.json
+data/knowledge/history/
+data/knowledge/trash/
 
 # ============================================
 # 8. 不上传的目录
