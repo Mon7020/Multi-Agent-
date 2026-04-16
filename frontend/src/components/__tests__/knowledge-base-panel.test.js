@@ -7,7 +7,8 @@ import { knowledgeBaseApi } from '../../api/index.js'
 vi.mock('../../api/index.js', () => ({
   knowledgeBaseApi: {
     getDocuments: vi.fn(),
-    getDocument: vi.fn()
+    getDocument: vi.fn(),
+    getParams: vi.fn()
   }
 }))
 
@@ -16,7 +17,7 @@ describe('KnowledgeBasePanel', () => {
     vi.clearAllMocks()
   })
 
-  it('renders registry-backed metrics and loads detail by document id', async () => {
+  it('uses frontend policy copy and hides document metrics when disabled', async () => {
     knowledgeBaseApi.getDocuments.mockResolvedValue({
       data: {
         documents: [
@@ -34,6 +35,27 @@ describe('KnowledgeBasePanel', () => {
         total: 1
       }
     })
+    knowledgeBaseApi.getParams.mockResolvedValue({
+      data: {
+        params: {},
+        cache_stats: {},
+        metrics: {},
+        frontend_policy: {
+          knowledge_base: {
+            intro_text: 'Visible docs only',
+            empty_state_text: 'No documents',
+            readonly_notice: 'Read only',
+            show_document_metrics: false
+          },
+          settings: {
+            show_summary: true,
+            show_runtime_overview: true,
+            show_permission_notice: true,
+            readonly_notice: 'Contact admin'
+          }
+        }
+      }
+    })
     knowledgeBaseApi.getDocument.mockResolvedValue({
       data: {
         id: 'doc_alpha',
@@ -46,11 +68,12 @@ describe('KnowledgeBasePanel', () => {
     const wrapper = mount(KnowledgeBasePanel)
     await flushPromises()
 
+    expect(knowledgeBaseApi.getParams).toHaveBeenCalledTimes(1)
     expect(knowledgeBaseApi.getDocument).toHaveBeenCalledWith('doc_alpha')
-    expect(wrapper.text()).toContain('alpha.txt')
-    expect(wrapper.text()).toContain('4 个分块')
-    expect(wrapper.text()).toContain('文件类型：.txt')
-    expect(wrapper.text()).toContain('文档 ID：doc_alpha')
+    expect(wrapper.text()).toContain('Visible docs only')
+    expect(wrapper.text()).toContain('Read only')
+    expect(wrapper.text()).not.toContain('文件类型')
+    expect(wrapper.text()).not.toContain('文档 ID')
     expect(wrapper.text()).toContain('alpha body')
   })
 })

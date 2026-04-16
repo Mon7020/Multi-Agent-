@@ -11,6 +11,7 @@ from app.admin_main import app as admin_app
 from app.api.v1 import auth, knowledge_base
 from app.services.auth_service import auth_service
 from app.services.knowledge_admin_service import knowledge_admin_service
+from app.services.settings_admin_service import settings_admin_service
 
 
 TEST_TMP_ROOT = Path(__file__).resolve().parents[2] / ".pytest_cache" / "knowledge-admin-tests"
@@ -47,10 +48,16 @@ class KnowledgeVisibilityTest(unittest.TestCase):
         self.docs_dir = self.temp_dir / "docs"
         self.docs_dir.mkdir(parents=True, exist_ok=True)
         self.metadata_path = self.temp_dir / "knowledge-registry.json"
+        self.policy_path = self.temp_dir / "frontend_policy.json"
+        self.audit_path = self.temp_dir / "admin_audit.jsonl"
 
         db_path = self.temp_dir / "auth.sqlite3"
         auth_service.reconfigure(database_url=f"sqlite:///{db_path.as_posix()}")
         knowledge_admin_service.reconfigure(docs_dir=str(self.docs_dir), metadata_path=str(self.metadata_path))
+        settings_admin_service.reconfigure(
+            frontend_policy_path=str(self.policy_path),
+            audit_storage_path=str(self.audit_path),
+        )
 
         self.rag_tool = FakeRagTool()
         self.get_rag_tool_patcher = patch(
@@ -111,6 +118,7 @@ class KnowledgeVisibilityTest(unittest.TestCase):
         self.get_rag_tool_patcher.stop()
         self.get_loaded_rag_tool_patcher.stop()
         knowledge_admin_service.reconfigure()
+        settings_admin_service.reconfigure()
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_frontend_user_only_sees_role_allowed_published_documents(self):
@@ -177,6 +185,15 @@ class KnowledgeVisibilityTest(unittest.TestCase):
             headers=self.operator_headers,
         )
         self.assertEqual(response.status_code, 403)
+
+    def test_frontend_params_response_includes_frontend_policy(self):
+        response = self.user_client.get("/api/v1/knowledge-base/params", headers=self.user_headers)
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("frontend_policy", payload)
+        self.assertIn("knowledge_base", payload["frontend_policy"])
+        self.assertIn("settings", payload["frontend_policy"])
 
 
 if __name__ == "__main__":

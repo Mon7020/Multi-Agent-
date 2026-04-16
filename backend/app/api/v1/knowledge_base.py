@@ -64,6 +64,7 @@ class RAGParamsResponse(BaseModel):
     params: RAGParams
     cache_stats: dict
     metrics: dict
+    frontend_policy: dict
 
 
 def get_project_root() -> Path:
@@ -227,6 +228,7 @@ async def upload_document(
 async def get_rag_params(current_user=Depends(require_authenticated_user())):
     del current_user
     runtime_params = rag_params_manager.get_params()
+    frontend_policy = settings_admin_service.get_frontend_policy()
 
     params = RAGParams(
         chunk_size=runtime_params["chunk_size"],
@@ -249,7 +251,12 @@ async def get_rag_params(current_user=Depends(require_authenticated_user())):
         cache_stats = {}
         metrics = {}
 
-    return RAGParamsResponse(params=params, cache_stats=cache_stats, metrics=metrics)
+    return RAGParamsResponse(
+        params=params,
+        cache_stats=cache_stats,
+        metrics=metrics,
+        frontend_policy=frontend_policy,
+    )
 
 
 @router.post("/knowledge-base/params")

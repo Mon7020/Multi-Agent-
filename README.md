@@ -283,3 +283,26 @@ python backend/run_backends.py
 - 前端：`5173`、`5174`
 
 请先结束占用端口的进程，再重新启动。
+# 2026-04-16 Update
+
+新增后台系统设置 Phase 2 能力：
+
+- 运行参数治理增加服务层校验与 `400` 错误映射
+- 后台新增 `POST /api/admin/settings/frontend-policy`
+- 后台设置页升级为“运行参数 + 前台展示策略 + 权限说明”三段结构
+- 前台知识库和前台设置摘要改为消费正式 `frontend_policy`
+
+当前系统设置模块边界：
+
+- 系统设置：运行参数、前台展示策略、权限模型只读说明
+- 知识库模块：单文档发布、前台显隐、允许角色、版本历史、回滚
+- 记忆管理模块：用户长期偏好与上下文
+
+相关验证命令：
+
+```bash
+D:\agentlearn\miniconda\envs\test3\python.exe -m unittest tests.admin.test_settings_admin_service tests.admin.test_settings_admin_api tests.admin.test_knowledge_visibility -v
+cd frontend
+npm run test:admin -- src/admin/__tests__/settings-admin-page.test.js src/admin/__tests__/knowledge-admin-page.test.js src/admin/__tests__/admin-nav.test.js src/admin/__tests__/admin-shell.test.js src/components/__tests__/knowledge-base-panel.test.js src/components/__tests__/settings-panel.test.js
+npm run build
+```

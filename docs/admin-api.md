@@ -533,3 +533,61 @@
 - 记忆偏好更新
 - 记忆清理
 - 运行参数更新
+# 2026-04-16 Admin Settings Phase 2 Addendum
+
+## `GET /api/v1/knowledge-base/params`
+
+说明：
+
+- 需要登录
+- 返回当前 RAG 运行参数摘要、缓存统计、运行指标
+- 新增 `frontend_policy` 字段，供前台知识库和前台设置摘要页消费正式展示策略
+
+响应新增字段：
+
+- `frontend_policy.knowledge_base.intro_text`
+- `frontend_policy.knowledge_base.empty_state_text`
+- `frontend_policy.knowledge_base.readonly_notice`
+- `frontend_policy.knowledge_base.show_document_metrics`
+- `frontend_policy.settings.show_summary`
+- `frontend_policy.settings.show_runtime_overview`
+- `frontend_policy.settings.show_permission_notice`
+- `frontend_policy.settings.readonly_notice`
+
+## `POST /api/admin/settings/frontend-policy`
+
+权限：
+
+- `admin`
+- `super_admin`
+
+说明：
+
+- 更新系统级前台展示策略
+- 不修改知识库单文档访问规则
+- 不修改用户个人偏好
+- 非法字段或非法类型返回 `400`
+
+请求体示例：
+
+```json
+{
+  "knowledge_base": {
+    "intro_text": "这里只展示当前角色允许访问的知识文件。",
+    "empty_state_text": "暂无可展示的知识文件。",
+    "readonly_notice": "前台只读，编辑请前往后台。",
+    "show_document_metrics": true
+  },
+  "settings": {
+    "show_summary": true,
+    "show_runtime_overview": true,
+    "show_permission_notice": true,
+    "readonly_notice": "如需修改配置，请由管理员在后台操作。"
+  }
+}
+```
+
+补充说明：
+
+- `GET /api/admin/settings/summary` 现在返回 `runtime_params`、`frontend_policy`、`permission_model`
+- `POST /api/admin/settings/runtime` 对无效参数组合返回 `400`

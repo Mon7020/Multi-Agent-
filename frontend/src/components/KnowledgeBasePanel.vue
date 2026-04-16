@@ -4,7 +4,8 @@
       <div>
         <p class="eyebrow">知识库</p>
         <h3>前台只读知识库</h3>
-        <p>这里只展示当前账号角色允许访问且已经发布的知识文件。编辑、发布和显隐控制统一在后台完成。</p>
+        <p>{{ knowledgePolicy.intro_text }}</p>
+        <p class="readonly-note">{{ knowledgePolicy.readonly_notice }}</p>
       </div>
       <button class="ghost-btn" @click="loadDocuments" :disabled="loading">
         {{ loading ? '刷新中...' : '刷新列表' }}
@@ -24,7 +25,7 @@
         </div>
 
         <div v-if="loading && documents.length === 0" class="empty-inline">正在加载知识文件...</div>
-        <div v-else-if="documents.length === 0" class="empty-inline">当前角色暂无可访问的知识文件。</div>
+        <div v-else-if="documents.length === 0" class="empty-inline">{{ knowledgePolicy.empty_state_text }}</div>
 
         <button
           v-for="doc in documents"
@@ -51,7 +52,7 @@
           </div>
         </header>
 
-        <div v-if="selectedDoc" class="metric-strip">
+        <div v-if="selectedDoc && knowledgePolicy.show_document_metrics" class="metric-strip">
           <span class="metric-pill">文件类型：{{ selectedDoc.file_type }}</span>
           <span class="metric-pill">分块数量：{{ selectedDoc.chunk_count || 0 }} 个分块</span>
           <span class="metric-pill">文档 ID：{{ selectedDoc.id }}</span>
@@ -70,9 +71,17 @@ import { onMounted, ref } from 'vue'
 
 import { knowledgeBaseApi } from '../api/index.js'
 
+const defaultKnowledgePolicy = () => ({
+  intro_text: '这里仅展示当前账号角色允许访问且已发布的知识文件。',
+  empty_state_text: '当前角色暂无可访问的知识文件。',
+  readonly_notice: '知识文件的编辑、发布和访问规则统一在后台维护。',
+  show_document_metrics: true
+})
+
 const documents = ref([])
 const selectedDoc = ref(null)
 const selectedContent = ref('')
+const knowledgePolicy = ref(defaultKnowledgePolicy())
 const loading = ref(false)
 const loadingContent = ref(false)
 const errorMessage = ref('')
@@ -89,8 +98,12 @@ async function loadDocuments() {
   loading.value = true
   clearError()
   try {
-    const response = await knowledgeBaseApi.getDocuments()
-    documents.value = response.data.documents || []
+    const [documentsResponse, paramsResponse] = await Promise.all([
+      knowledgeBaseApi.getDocuments(),
+      knowledgeBaseApi.getParams()
+    ])
+    documents.value = documentsResponse.data.documents || []
+    knowledgePolicy.value = paramsResponse.data.frontend_policy?.knowledge_base || defaultKnowledgePolicy()
     if (documents.value.length > 0) {
       const stillSelected = documents.value.find((doc) => doc.id === selectedDoc.value?.id)
       await selectDocument(stillSelected || documents.value[0])
@@ -194,6 +207,11 @@ onMounted(() => {
   color: var(--accent);
   font-size: 12px;
   font-weight: 600;
+}
+
+.readonly-note {
+  margin-top: 10px;
+  color: var(--text-secondary);
 }
 
 .metric-strip {

@@ -128,6 +128,10 @@ export const settingsAdminApi = {
 
   updateRuntime(payload) {
     return adminApi.post('/settings/runtime', payload)
+  },
+
+  updateFrontendPolicy(payload) {
+    return adminApi.post('/settings/frontend-policy', payload)
   }
 }
 

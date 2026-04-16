@@ -4,17 +4,18 @@
       <div>
         <p class="eyebrow">设置</p>
         <h3>前台只读设置摘要</h3>
-        <p>运行参数、权限模型和发布策略已经迁移到后台。当前页面仅展示只读信息，帮助你理解系统状态与访问边界。</p>
+        <p>运行参数、权限模型和发布策略已经迁移到后台。当前页面只展示只读信息，帮助你理解系统状态与访问边界。</p>
       </div>
       <button class="ghost-btn" @click="loadSummary" :disabled="loading">
-        {{ loading ? '刷新中…' : '刷新摘要' }}
+        {{ loading ? '刷新中...' : '刷新摘要' }}
       </button>
     </article>
 
     <p v-if="errorMessage" class="notice error">{{ errorMessage }}</p>
+    <p class="readonly-notice">{{ settingsPolicy.readonly_notice }}</p>
 
     <div class="summary-grid">
-      <article class="panel">
+      <article v-if="settingsPolicy.show_summary" class="panel">
         <header>
           <p class="label">账号状态</p>
           <h4>{{ currentUser?.username || '未登录' }}</h4>
@@ -39,7 +40,7 @@
         </div>
       </article>
 
-      <article class="panel">
+      <article v-if="settingsPolicy.show_runtime_overview" class="panel">
         <header>
           <p class="label">运行参数</p>
           <h4>只读查看当前配置</h4>
@@ -52,7 +53,7 @@
         </div>
       </article>
 
-      <article class="panel full">
+      <article v-if="settingsPolicy.show_permission_notice" class="panel full">
         <header>
           <p class="label">使用说明</p>
           <h4>后台接管的能力</h4>
@@ -72,8 +73,16 @@ import { computed, onMounted, ref } from 'vue'
 
 import { authApi, getAuthUser, healthApi, knowledgeBaseApi, updateAuthUser } from '../api/index.js'
 
+const defaultSettingsPolicy = () => ({
+  show_summary: true,
+  show_runtime_overview: true,
+  show_permission_notice: true,
+  readonly_notice: '前台仅保留系统摘要，正式配置请在后台维护。'
+})
+
 const currentUser = ref(getAuthUser())
 const runtimeParams = ref({})
+const settingsPolicy = ref(defaultSettingsPolicy())
 const backendHealth = ref('unknown')
 const backendVersion = ref('N/A')
 const loading = ref(false)
@@ -120,6 +129,10 @@ async function loadSummary() {
 
     currentUser.value = updateAuthUser(meResponse.data)
     runtimeParams.value = paramsResponse.data.params || {}
+    settingsPolicy.value = {
+      ...defaultSettingsPolicy(),
+      ...((paramsResponse.data.frontend_policy && paramsResponse.data.frontend_policy.settings) || {})
+    }
     backendHealth.value = healthResponse.data.status || 'unknown'
     backendVersion.value = healthResponse.data.version || 'N/A'
   } catch (error) {
@@ -167,6 +180,13 @@ onMounted(() => {
 
 .panel.full {
   grid-column: 1 / -1;
+}
+
+.readonly-notice {
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: rgba(246, 241, 233, 0.72);
+  color: var(--text-secondary);
 }
 
 .eyebrow,
