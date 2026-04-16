@@ -76,8 +76,10 @@ cp .env.example .env
 默认数据库：
 
 ```env
-DATABASE_URL=sqlite:///data/auth/app.db
+DATABASE_URL=mysql+pymysql://root:your_mysql_password_here@127.0.0.1:3306/testdb?charset=utf8mb4
 ```
+
+For SQLite auth migration steps, see `docs/auth-mysql-migration.md`.
 
 ## 启动方式
 

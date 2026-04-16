@@ -104,10 +104,10 @@ class AuthService:
 
         raise RuntimeError("Unsupported database type")
 
-    def _ensure_schema(self) -> None:
-        conn = self._get_connection()
-        try:
-            sql = """
+    def _users_table_sql(self, db_type: Optional[str] = None) -> str:
+        target = db_type or self._db_type
+        if target == "sqlite":
+            return """
                 CREATE TABLE IF NOT EXISTS users (
                     id TEXT PRIMARY KEY,
                     username TEXT NOT NULL UNIQUE,
@@ -121,6 +121,31 @@ class AuthService:
                     updated_at INTEGER
                 )
                 """
+        if target == "mysql":
+            return """
+                CREATE TABLE IF NOT EXISTS users (
+                    id VARCHAR(64) NOT NULL,
+                    username VARCHAR(64) NOT NULL,
+                    password_salt VARCHAR(255) NOT NULL,
+                    password_hash VARCHAR(255) NOT NULL,
+                    created_at BIGINT NOT NULL,
+                    status VARCHAR(32) NOT NULL DEFAULT 'active',
+                    role VARCHAR(32) NOT NULL DEFAULT 'user',
+                    last_login_at BIGINT NULL,
+                    password_updated_at BIGINT NULL,
+                    updated_at BIGINT NULL,
+                    PRIMARY KEY (id),
+                    UNIQUE KEY uk_users_username (username),
+                    KEY idx_users_role (role),
+                    KEY idx_users_status (status)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                """
+        raise RuntimeError(f"Unsupported database type: {target}")
+
+    def _ensure_schema(self) -> None:
+        conn = self._get_connection()
+        try:
+            sql = self._users_table_sql()
             if self._db_type == "sqlite":
                 conn.execute(sql)
             else:
@@ -228,6 +253,137 @@ class AuthService:
             cursor.execute(sql, (user_id,))
             row = cursor.fetchone()
             return dict(row) if row else None
+
+    def get_user_by_username(self, username: str) -> Optional[Dict[str, Any]]:
+        normalized = self._normalize_username(username)
+        if not normalized:
+            return None
+
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                user = self._fetch_user_by_username(conn, normalized)
+            finally:
+                conn.close()
+
+        if not user:
+            return None
+
+        return {
+            "id": user["id"],
+            "username": user["username"],
+            "created_at": user.get("created_at"),
+            "status": user.get("status"),
+            "role": user.get("role", "user"),
+            "last_login_at": user.get("last_login_at"),
+            "password_updated_at": user.get("password_updated_at"),
+            "updated_at": user.get("updated_at"),
+        }
+
+    def list_user_records(self) -> list[Dict[str, Any]]:
+        sql = """
+            SELECT id, username, password_salt, password_hash, created_at, status, role, last_login_at, password_updated_at, updated_at
+            FROM users
+            ORDER BY created_at ASC, username ASC
+            """
+
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                if self._db_type == "sqlite":
+                    rows = conn.execute(sql).fetchall()
+                else:
+                    with conn.cursor() as cursor:
+                        cursor.execute(sql)
+                        rows = cursor.fetchall()
+            finally:
+                conn.close()
+
+        return [dict(row) for row in rows]
+
+    def create_user_record(self, record: Dict[str, Any]) -> Dict[str, Any]:
+        required_fields = [
+            "id",
+            "username",
+            "password_salt",
+            "password_hash",
+            "created_at",
+            "status",
+            "role",
+            "password_updated_at",
+            "updated_at",
+        ]
+        missing = [field for field in required_fields if field not in record]
+        if missing:
+            raise AuthError(f"missing user fields: {', '.join(missing)}")
+
+        normalized = self._normalize_username(record["username"])
+        self._validate_username(normalized)
+        if record["role"] not in {"user", "operator", "admin", "super_admin"}:
+            raise AuthError("unsupported role")
+        if record["status"] not in {"active", "disabled"}:
+            raise AuthError("unsupported status")
+
+        placeholder = self._db_config.get("placeholder", "?")
+        sql = f"""
+            INSERT INTO users (
+                id,
+                username,
+                password_salt,
+                password_hash,
+                created_at,
+                status,
+                role,
+                last_login_at,
+                password_updated_at,
+                updated_at
+            )
+            VALUES (
+                {placeholder},
+                {placeholder},
+                {placeholder},
+                {placeholder},
+                {placeholder},
+                {placeholder},
+                {placeholder},
+                {placeholder},
+                {placeholder},
+                {placeholder}
+            )
+            """
+        params = (
+            record["id"],
+            normalized,
+            record["password_salt"],
+            record["password_hash"],
+            int(record["created_at"]),
+            record["status"],
+            record["role"],
+            record.get("last_login_at"),
+            record.get("password_updated_at"),
+            record.get("updated_at"),
+        )
+
+        with self._lock:
+            conn = self._get_connection()
+            try:
+                if self._fetch_user_by_id(conn, record["id"]):
+                    raise AuthError("user id already exists")
+                if self._fetch_user_by_username(conn, normalized):
+                    raise AuthError("username already exists")
+                if self._db_type == "sqlite":
+                    conn.execute(sql, params)
+                else:
+                    with conn.cursor() as cursor:
+                        cursor.execute(sql, params)
+                conn.commit()
+            finally:
+                conn.close()
+
+        created = self.get_user_by_id(record["id"])
+        if not created:
+            raise AuthError("user not found after create")
+        return created
 
     def register(self, username: str, password: str) -> Dict[str, Any]:
         normalized = self._normalize_username(username)
