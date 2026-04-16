@@ -35,6 +35,17 @@ class FakeRagTool:
 
     def load_document(self, source, chunk_size=400, chunk_overlap=50):
         del chunk_size, chunk_overlap
+        suffix = Path(source).suffix.lower()
+        if suffix in {".html", ".htm"}:
+            return [
+                {"metadata": {"source_file": source}, "page_content": "html-chunk-0"},
+                {"metadata": {"source_file": source}, "page_content": "html-chunk-1"},
+            ]
+        if suffix == ".xlsx":
+            return [
+                {"metadata": {"source_file": source}, "page_content": "xlsx-sheet-0"},
+                {"metadata": {"source_file": source}, "page_content": "xlsx-sheet-1"},
+            ]
         line_count = max(1, len(Path(source).read_text(encoding="utf-8").splitlines()))
         return [{"metadata": {"source_file": source}, "page_content": f"chunk-{index}"} for index in range(line_count)]
 
@@ -135,6 +146,43 @@ class KnowledgeAdminPhase2ApiTest(unittest.TestCase):
         self.assertEqual(restored["document_id"], created["document_id"])
         self.assertEqual(restored["published"], False)
         self.assertEqual(restored["visible_to_frontend"], False)
+
+    def test_admin_can_upload_html_and_xlsx_documents(self):
+        html_response = self.client.post(
+            "/api/admin/knowledge/documents",
+            headers=self.headers,
+            files={"file": ("guide.html", b"<html><body><h1>Guide</h1></body></html>", "text/html")},
+            data={
+                "description": "html doc",
+                "tags": '["guide"]',
+                "allowed_roles": '["user","admin"]',
+                "published": "false",
+                "visible_to_frontend": "false",
+            },
+        )
+        self.assertEqual(html_response.status_code, 200)
+        self.assertEqual(html_response.json()["file_type"], ".html")
+
+        xlsx_response = self.client.post(
+            "/api/admin/knowledge/documents",
+            headers=self.headers,
+            files={
+                "file": (
+                    "table.xlsx",
+                    b"PK\x03\x04\x14\x00\x00\x00\x08\x00fake-xlsx-content",
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+            },
+            data={
+                "description": "xlsx doc",
+                "tags": '["table"]',
+                "allowed_roles": '["user","admin"]',
+                "published": "false",
+                "visible_to_frontend": "false",
+            },
+        )
+        self.assertEqual(xlsx_response.status_code, 200)
+        self.assertEqual(xlsx_response.json()["file_type"], ".xlsx")
 
 
 if __name__ == "__main__":

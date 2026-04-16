@@ -60,7 +60,12 @@
       当前账号为运营角色，仅可查看文件状态与指标，不能执行上传、发布、显隐、删除或恢复操作。
     </p>
 
-    <div class="workspace-grid">
+    <div
+      ref="workspaceGrid"
+      data-testid="knowledge-workspace-grid"
+      class="workspace-grid"
+      :style="workspaceStyle"
+    >
       <section class="table-card">
         <div class="table-head">
           <div>
@@ -73,7 +78,12 @@
         <div v-if="loading && documents.length === 0" class="empty-panel">正在加载知识文件...</div>
         <div v-else-if="documents.length === 0" class="empty-panel">当前筛选条件下没有可显示的知识文件。</div>
 
-        <div v-else class="table-shell">
+        <div
+          v-else
+          data-testid="knowledge-list-scroll"
+          class="table-shell"
+          @wheel="handlePaneWheel"
+        >
           <table class="knowledge-table">
             <thead>
               <tr>
@@ -123,11 +133,16 @@
       </section>
 
       <aside class="detail-card">
-        <div v-if="!selectedDocument" class="empty-panel">
+        <div
+          data-testid="knowledge-detail-scroll"
+          class="detail-scroll"
+          @wheel="handlePaneWheel"
+        >
+          <div v-if="!selectedDocument" class="empty-panel">
           选择左侧文档后，可以查看指标、编辑元数据，或执行替换、删除、恢复操作。
         </div>
 
-        <template v-else>
+          <template v-else>
           <div class="detail-head">
             <div>
               <p class="panel-label">文档详情</p>
@@ -307,7 +322,8 @@
               </div>
             </div>
           </section>
-        </template>
+          </template>
+        </div>
       </aside>
     </div>
 
@@ -315,21 +331,21 @@
       ref="createInput"
       class="hidden-input"
       type="file"
-      accept=".txt,.pdf,.docx"
+      accept=".txt,.pdf,.docx,.html,.htm,.xlsx"
       @change="handleCreateFile"
     />
     <input
       ref="replaceInput"
       class="hidden-input"
       type="file"
-      accept=".txt,.pdf,.docx"
+      accept=".txt,.pdf,.docx,.html,.htm,.xlsx"
       @change="handleReplaceFile"
     />
   </section>
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import { knowledgeAdminApi } from '../../admin-api.js'
 import { getAuthUser } from '../../auth/session.js'
@@ -358,8 +374,13 @@ const errorMessage = ref('')
 const successMessage = ref('')
 const versions = ref([])
 const selectedVersion = ref(null)
+const workspaceGrid = ref(null)
+const workspaceHeight = ref('auto')
 
 const isOperator = computed(() => (getAuthUser()?.role || '') === 'operator')
+const workspaceStyle = computed(() =>
+  workspaceHeight.value === 'auto' ? {} : { '--workspace-height': workspaceHeight.value }
+)
 
 function normalizeDocument(doc) {
   const tags = Array.isArray(doc.tags) ? [...doc.tags] : []
@@ -432,6 +453,33 @@ function selectDocument(doc) {
   selectedDocument.value = doc || null
 }
 
+function syncWorkspaceHeight() {
+  if (typeof window === 'undefined') return
+  if (window.innerWidth <= 1080 || !workspaceGrid.value) {
+    workspaceHeight.value = 'auto'
+    return
+  }
+  const top = workspaceGrid.value.getBoundingClientRect().top
+  const availableHeight = Math.max(360, Math.floor(window.innerHeight - top - 24))
+  workspaceHeight.value = `${availableHeight}px`
+}
+
+function handlePaneWheel(event) {
+  const pane = event.currentTarget
+  if (!(pane instanceof HTMLElement)) return
+
+  const maxScrollTop = Math.max(0, pane.scrollHeight - pane.clientHeight)
+  if (maxScrollTop <= 0) {
+    event.preventDefault()
+    event.stopPropagation()
+    return
+  }
+
+  pane.scrollTop = Math.max(0, Math.min(maxScrollTop, pane.scrollTop + event.deltaY))
+  event.preventDefault()
+  event.stopPropagation()
+}
+
 function syncVersionSelection(nextVersions, preferredVersionId = '') {
   const targetId = preferredVersionId || selectedVersion.value?.version_id || ''
   selectedVersion.value =
@@ -484,6 +532,8 @@ async function loadDocuments(preferredDocumentId = '') {
     setError(error.response?.data?.detail || error.message || '加载知识文件失败')
   } finally {
     loading.value = false
+    await nextTick()
+    syncWorkspaceHeight()
   }
 }
 
@@ -649,16 +699,36 @@ watch(
   }
 )
 
+watch(
+  () => [successMessage.value, errorMessage.value],
+  async () => {
+    await nextTick()
+    syncWorkspaceHeight()
+  }
+)
+
 onMounted(() => {
   clearMessages()
   loadDocuments()
+  syncWorkspaceHeight()
+  if (typeof window !== 'undefined') {
+    window.addEventListener('resize', syncWorkspaceHeight)
+  }
+})
+
+onBeforeUnmount(() => {
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('resize', syncWorkspaceHeight)
+  }
 })
 </script>
 
 <style scoped>
 .knowledge-admin-page {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 18px;
+  min-height: 0;
 }
 
 .page-hero,
@@ -799,20 +869,30 @@ onMounted(() => {
   display: grid;
   grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.9fr);
   gap: 18px;
+  align-items: stretch;
+  min-height: 0;
+  height: var(--workspace-height, auto);
 }
 
 .table-card,
 .detail-card {
-  min-height: 560px;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
 }
 
 .table-card {
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 18px;
 }
 
-.table-shell {
+.table-shell,
+.detail-scroll {
+  min-height: 0;
+  height: 100%;
   overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .knowledge-table {
@@ -859,7 +939,12 @@ onMounted(() => {
 
 .detail-card {
   display: grid;
+}
+
+.detail-scroll {
+  display: grid;
   gap: 18px;
+  align-content: start;
 }
 
 .detail-head {
@@ -967,6 +1052,18 @@ onMounted(() => {
 @media (max-width: 1080px) {
   .workspace-grid {
     grid-template-columns: 1fr;
+    height: auto;
+  }
+
+  .table-card,
+  .detail-card {
+    height: auto;
+    overflow: visible;
+  }
+
+  .table-shell,
+  .detail-scroll {
+    overflow: visible;
   }
 
   .metric-grid {

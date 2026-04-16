@@ -103,6 +103,64 @@ describe('KnowledgeAdminPage', () => {
     expect(wrapper.get('[data-testid="knowledge-upload-trigger"]').attributes('disabled')).toBeDefined()
   })
 
+  it('renders independent list and detail scroll panes', async () => {
+    knowledgeAdminApi.listDocuments.mockResolvedValue({
+      data: {
+        documents: [makeDocument()],
+        total: 1
+      }
+    })
+
+    const wrapper = mount(KnowledgeAdminPage)
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="knowledge-list-scroll"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="knowledge-detail-scroll"]').exists()).toBe(true)
+  })
+
+  it('accepts html and xlsx files in the admin upload inputs', async () => {
+    knowledgeAdminApi.listDocuments.mockResolvedValue({
+      data: {
+        documents: [makeDocument()],
+        total: 1
+      }
+    })
+
+    const wrapper = mount(KnowledgeAdminPage)
+    await flushPromises()
+
+    const expectedAccept = '.txt,.pdf,.docx,.html,.htm,.xlsx'
+    const fileInputs = wrapper.findAll('input[type="file"]')
+    expect(fileInputs).toHaveLength(2)
+    expect(fileInputs[0].attributes('accept')).toBe(expectedAccept)
+    expect(fileInputs[1].attributes('accept')).toBe(expectedAccept)
+  })
+
+  it('keeps wheel scrolling isolated to the hovered pane', async () => {
+    knowledgeAdminApi.listDocuments.mockResolvedValue({
+      data: {
+        documents: [makeDocument()],
+        total: 1
+      }
+    })
+
+    const wrapper = mount(KnowledgeAdminPage)
+    await flushPromises()
+
+    const listPane = wrapper.get('[data-testid="knowledge-list-scroll"]').element
+    const detailPane = wrapper.get('[data-testid="knowledge-detail-scroll"]').element
+
+    Object.defineProperty(listPane, 'clientHeight', { value: 120, configurable: true })
+    Object.defineProperty(listPane, 'scrollHeight', { value: 360, configurable: true })
+    listPane.scrollTop = 24
+    detailPane.scrollTop = 0
+
+    await wrapper.get('[data-testid="knowledge-list-scroll"]').trigger('wheel', { deltaY: 40 })
+
+    expect(listPane.scrollTop).toBe(64)
+    expect(detailPane.scrollTop).toBe(0)
+  })
+
   it('lets admin filter deleted documents and exposes action buttons', async () => {
     knowledgeAdminApi.listDocuments.mockResolvedValue({
       data: {

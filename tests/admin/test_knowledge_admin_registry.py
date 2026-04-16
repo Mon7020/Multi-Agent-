@@ -3,12 +3,37 @@ import shutil
 import unittest
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
+import app.services.knowledge_admin_service as knowledge_admin_service_module
 from app.services.knowledge_admin_service import knowledge_admin_service
 
 
 TEST_TMP_ROOT = Path(__file__).resolve().parents[2] / ".pytest_cache" / "knowledge-admin-registry-tests"
 TEST_TMP_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+class FakeRagCollection:
+    def __init__(self, metadatas=None):
+        self._metadatas = metadatas or []
+
+    def get(self, include=None):
+        del include
+        return {"metadatas": list(self._metadatas)}
+
+
+class FakeLoadedRagTool:
+    def __init__(self, metadatas=None):
+        self.collection = FakeRagCollection(metadatas)
+
+
+class FakePersistentClient:
+    def __init__(self, metadatas=None):
+        self._collection = FakeRagCollection(metadatas)
+
+    def get_collection(self, _name):
+        return self._collection
 
 
 class KnowledgeAdminRegistryTest(unittest.TestCase):
@@ -75,6 +100,124 @@ class KnowledgeAdminRegistryTest(unittest.TestCase):
             document["allowed_roles"],
             ["user", "operator", "admin", "super_admin"],
         )
+
+    def test_existing_registry_record_reconciles_chunk_count_from_loaded_vector_store(self):
+        alpha_path = self.docs_dir / "alpha.txt"
+        alpha_path.write_text("line-1\nline-2\nline-3", encoding="utf-8")
+        self.metadata_path.write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "documents": {
+                        "doc_alpha": {
+                            "document_id": "doc_alpha",
+                            "current_version_id": None,
+                            "filename": "alpha.txt",
+                            "file_type": ".txt",
+                            "storage_name": "alpha.txt",
+                            "storage_path": str(alpha_path.resolve()),
+                            "size": alpha_path.stat().st_size,
+                            "checksum": "legacy-checksum",
+                            "chunk_count": 0,
+                            "description": "",
+                            "tags": [],
+                            "published": True,
+                            "visible_to_frontend": True,
+                            "allowed_roles": ["user", "operator", "admin", "super_admin"],
+                            "deleted": False,
+                            "created_at": "2026-04-15T10:00:00",
+                            "created_by": "admin-1",
+                            "updated_at": "2026-04-15T10:00:00",
+                            "updated_by": "admin-1",
+                            "deleted_at": None,
+                            "deleted_by": None,
+                        }
+                    },
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        rag_tool = FakeLoadedRagTool(
+            [
+                {"source_file": str(alpha_path.resolve())},
+                {"source_file": str(alpha_path.resolve())},
+                {"source_file": str(alpha_path.resolve())},
+            ]
+        )
+
+        with patch("app.services.knowledge_admin_service.get_loaded_rag_tool", return_value=rag_tool, create=True):
+            documents = knowledge_admin_service.list_documents()
+
+        self.assertEqual(len(documents), 1)
+        self.assertEqual(documents[0]["chunk_count"], 3)
+
+        saved = json.loads(self.metadata_path.read_text(encoding="utf-8"))
+        self.assertEqual(saved["documents"]["doc_alpha"]["chunk_count"], 3)
+
+    def test_existing_registry_record_reconciles_chunk_count_from_persistent_vector_store(self):
+        alpha_path = self.docs_dir / "alpha.txt"
+        alpha_path.write_text("line-1\nline-2\nline-3", encoding="utf-8")
+        self.metadata_path.write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "documents": {
+                        "doc_alpha": {
+                            "document_id": "doc_alpha",
+                            "current_version_id": None,
+                            "filename": "alpha.txt",
+                            "file_type": ".txt",
+                            "storage_name": "alpha.txt",
+                            "storage_path": str(alpha_path.resolve()),
+                            "size": alpha_path.stat().st_size,
+                            "checksum": "legacy-checksum",
+                            "chunk_count": 0,
+                            "description": "",
+                            "tags": [],
+                            "published": True,
+                            "visible_to_frontend": True,
+                            "allowed_roles": ["user", "operator", "admin", "super_admin"],
+                            "deleted": False,
+                            "created_at": "2026-04-15T10:00:00",
+                            "created_by": "admin-1",
+                            "updated_at": "2026-04-15T10:00:00",
+                            "updated_by": "admin-1",
+                            "deleted_at": None,
+                            "deleted_by": None,
+                        }
+                    },
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        client = FakePersistentClient(
+            [
+                {"source_file": str(alpha_path.resolve())},
+                {"source_file": str(alpha_path.resolve())},
+                {"source_file": str(alpha_path.resolve())},
+            ]
+        )
+
+        with patch("app.services.knowledge_admin_service.get_loaded_rag_tool", return_value=None, create=True):
+            with patch(
+                "app.services.knowledge_admin_service.get_rag_tool",
+                side_effect=AssertionError("should not initialize rag tool"),
+                create=True,
+            ):
+                with patch(
+                    "app.services.knowledge_admin_service._get_chromadb_module",
+                    return_value=SimpleNamespace(PersistentClient=lambda path: client),
+                ):
+                    documents = knowledge_admin_service.list_documents()
+
+        self.assertEqual(len(documents), 1)
+        self.assertEqual(documents[0]["chunk_count"], 3)
 
 
 if __name__ == "__main__":

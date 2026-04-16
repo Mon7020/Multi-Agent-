@@ -10,13 +10,18 @@ import sys
 import time
 import json
 import math
+import posixpath
+import re
 import hashlib
 import asyncio
 import threading
+import zipfile
 from typing import List, Dict, Any, Optional, Union, Tuple
 from datetime import datetime, timedelta, date
 from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor
+from html.parser import HTMLParser
+from xml.etree import ElementTree as ET
 
 import pdfplumber
 import docx
@@ -40,6 +45,104 @@ from tools.rag.bm25_ranker import ProfessionalBM25
 from tools.rag.redis_cache_manager import get_cache_manager, RetrievalCache
 
 app_logger = LoggerManager.get_logger("rag_tool")
+
+_XLSX_MAIN_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+_XLSX_REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
+_XLSX_DOC_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+
+
+class _StructuredHTMLBlockParser(HTMLParser):
+    NOISE_TAGS = {"head", "nav", "script", "style", "footer", "noscript"}
+    BLOCK_TAGS = {"p", "li"}
+
+    def __init__(self):
+        super().__init__()
+        self.blocks: List[Dict[str, Any]] = []
+        self.heading_stack: List[str] = []
+        self._ignored_depth = 0
+        self._capture_mode: Optional[str] = None
+        self._capture_level: Optional[int] = None
+        self._capture_parts: List[str] = []
+
+    @staticmethod
+    def _normalize_text(parts: List[str]) -> str:
+        text = "".join(parts)
+        text = re.sub(r"\s+", " ", text)
+        return text.strip()
+
+    def _flush_heading(self):
+        if self._capture_mode != "heading" or self._capture_level is None:
+            return
+        heading_text = self._normalize_text(self._capture_parts)
+        if heading_text:
+            level_index = self._capture_level - 1
+            self.heading_stack = self.heading_stack[:level_index]
+            self.heading_stack.append(heading_text)
+        self._capture_mode = None
+        self._capture_level = None
+        self._capture_parts = []
+
+    def _flush_block(self):
+        if self._capture_mode != "block":
+            return
+        block_text = self._normalize_text(self._capture_parts)
+        if block_text:
+            self.blocks.append(
+                {
+                    "heading_path": list(self.heading_stack),
+                    "text": block_text,
+                }
+            )
+        self._capture_mode = None
+        self._capture_level = None
+        self._capture_parts = []
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        if tag in self.NOISE_TAGS:
+            self._ignored_depth += 1
+            return
+        if self._ignored_depth:
+            return
+        if re.fullmatch(r"h[1-6]", tag):
+            self._flush_block()
+            self._flush_heading()
+            self._capture_mode = "heading"
+            self._capture_level = int(tag[1])
+            self._capture_parts = []
+            return
+        if tag in self.BLOCK_TAGS:
+            self._flush_block()
+            self._capture_mode = "block"
+            self._capture_level = None
+            self._capture_parts = []
+            return
+        if tag == "br" and self._capture_mode == "block":
+            self._capture_parts.append("\n")
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if tag in self.NOISE_TAGS:
+            if self._ignored_depth:
+                self._ignored_depth -= 1
+            return
+        if self._ignored_depth:
+            return
+        if re.fullmatch(r"h[1-6]", tag):
+            self._flush_heading()
+            return
+        if tag in self.BLOCK_TAGS:
+            self._flush_block()
+
+    def handle_data(self, data):
+        if self._ignored_depth or self._capture_mode is None:
+            return
+        self._capture_parts.append(data)
+
+    def close(self):
+        super().close()
+        self._flush_heading()
+        self._flush_block()
 
 
 @dataclass
@@ -905,6 +1008,430 @@ class RAGTool:
         "general": {"chunk_size": 400, "chunk_overlap": 50}     # 默认
     }
 
+    def _detect_document_strategy(self, file_path: str) -> str:
+        file_ext = os.path.splitext(file_path)[1].lower()
+
+        if file_ext in {".html", ".htm", ".docx"}:
+            return "structured_document"
+        if file_ext == ".xlsx":
+            return "table_document"
+        if file_ext == ".pdf" and self._pdf_has_outline(file_path):
+            return "structured_document"
+        return "recursive_text"
+
+    def _pdf_has_outline(self, file_path: str) -> bool:
+        try:
+            with pdfplumber.open(file_path) as pdf:
+                catalog = getattr(getattr(pdf, "doc", None), "catalog", None)
+                if hasattr(catalog, "get"):
+                    return bool(catalog.get("Outlines"))
+        except Exception:
+            return False
+        return False
+
+    def _build_recursive_splitter(self, chunk_size: int, chunk_overlap: int,
+                                  content_type: str) -> RecursiveCharacterTextSplitter:
+        if content_type == "price_list":
+            separators = [
+                "\n===== ",
+                "\n\n",
+                "\n",
+                "。",
+                "？",
+                "！",
+                ". ",
+                "? ",
+                "! ",
+                "，",
+                "；",
+                "：",
+                ", ",
+                "; ",
+                ": ",
+                " ",
+                "",
+            ]
+        else:
+            separators = [
+                "\n\n",
+                "\n",
+                "。",
+                "？",
+                "！",
+                ". ",
+                "? ",
+                "! ",
+                "，",
+                "；",
+                "：",
+                ", ",
+                "; ",
+                ": ",
+                " ",
+                "",
+            ]
+
+        return RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            separators=separators
+        )
+
+    def _read_recursive_text(self, file_path: str) -> str:
+        file_ext = os.path.splitext(file_path)[1].lower()
+
+        if file_ext == ".pdf":
+            with pdfplumber.open(file_path) as pdf:
+                return "\n".join([page.extract_text() for page in pdf.pages if page.extract_text()])
+        if file_ext == ".docx":
+            doc = docx.Document(file_path)
+            return "\n".join([para.text for para in doc.paragraphs if para.text])
+        if file_ext in {".txt", ".html", ".htm"}:
+            with open(file_path, "r", encoding="utf-8") as f:
+                return f.read()
+        if file_ext == ".xlsx":
+            rows = []
+            for sheet_name, sheet_rows in self._load_xlsx_rows(file_path):
+                rows.append(f"[Sheet] {sheet_name}")
+                for row in sheet_rows:
+                    values = [
+                        str(cell).strip()
+                        for cell in row
+                        if cell is not None and str(cell).strip() != ""
+                    ]
+                    if values:
+                        rows.append("\t".join(values))
+            return "\n".join(rows)
+
+        raise ValueError(f"涓嶆敮鎸佺殑鏂囦欢绫诲瀷: {file_path}")
+
+    def _load_xlsx_rows(self, file_path: str) -> List[Tuple[str, List[List[Any]]]]:
+        try:
+            from openpyxl import load_workbook
+        except ImportError:
+            return self._load_xlsx_rows_from_archive(file_path)
+
+        workbook = load_workbook(file_path, read_only=True, data_only=True)
+        try:
+            return [
+                (sheet.title, [list(row) for row in sheet.iter_rows(values_only=True)])
+                for sheet in workbook.worksheets
+            ]
+        finally:
+            workbook.close()
+
+    def _load_xlsx_rows_from_archive(self, file_path: str) -> List[Tuple[str, List[List[Any]]]]:
+        with zipfile.ZipFile(file_path) as archive:
+            workbook_root = ET.fromstring(archive.read("xl/workbook.xml"))
+            relationships_root = ET.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
+            relationship_targets: Dict[str, str] = {}
+
+            for relationship in relationships_root.findall(f"{{{_XLSX_REL_NS}}}Relationship"):
+                relationship_id = relationship.attrib.get("Id")
+                target = relationship.attrib.get("Target")
+                if not relationship_id or not target:
+                    continue
+                relationship_targets[relationship_id] = posixpath.normpath(
+                    posixpath.join("xl", target)
+                ).lstrip("/")
+
+            shared_strings = self._load_xlsx_shared_strings(archive)
+            sheets: List[Tuple[str, List[List[Any]]]] = []
+            for sheet in workbook_root.findall(f".//{{{_XLSX_MAIN_NS}}}sheet"):
+                sheet_name = sheet.attrib.get("name") or "Sheet"
+                relationship_id = sheet.attrib.get(f"{{{_XLSX_DOC_REL_NS}}}id")
+                sheet_path = relationship_targets.get(relationship_id or "")
+                if not sheet_path:
+                    continue
+                sheets.append(
+                    (
+                        sheet_name,
+                        self._parse_xlsx_sheet_rows(archive.read(sheet_path), shared_strings),
+                    )
+                )
+            return sheets
+
+    def _load_xlsx_shared_strings(self, archive: zipfile.ZipFile) -> List[str]:
+        if "xl/sharedStrings.xml" not in archive.namelist():
+            return []
+
+        root = ET.fromstring(archive.read("xl/sharedStrings.xml"))
+        shared_strings: List[str] = []
+        for string_item in root.findall(f".//{{{_XLSX_MAIN_NS}}}si"):
+            text_parts = [
+                text_node.text or ""
+                for text_node in string_item.findall(f".//{{{_XLSX_MAIN_NS}}}t")
+            ]
+            shared_strings.append("".join(text_parts))
+        return shared_strings
+
+    def _parse_xlsx_sheet_rows(self, sheet_xml: bytes, shared_strings: List[str]) -> List[List[Any]]:
+        root = ET.fromstring(sheet_xml)
+        rows: List[List[Any]] = []
+        max_columns = 0
+
+        for row_node in root.findall(f".//{{{_XLSX_MAIN_NS}}}sheetData/{{{_XLSX_MAIN_NS}}}row"):
+            row_values: Dict[int, Any] = {}
+            row_max_column = 0
+
+            for cell_index, cell_node in enumerate(
+                row_node.findall(f"{{{_XLSX_MAIN_NS}}}c"),
+                start=1,
+            ):
+                column_index = self._xlsx_column_index(cell_node.attrib.get("r", "")) or cell_index
+                row_values[column_index] = self._parse_xlsx_cell_value(cell_node, shared_strings)
+                row_max_column = max(row_max_column, column_index)
+
+            if row_max_column == 0:
+                rows.append([])
+                continue
+
+            max_columns = max(max_columns, row_max_column)
+            rows.append([row_values.get(index) for index in range(1, row_max_column + 1)])
+
+        if max_columns > 0:
+            for row in rows:
+                if len(row) < max_columns:
+                    row.extend([None] * (max_columns - len(row)))
+
+        return rows
+
+    def _xlsx_column_index(self, cell_reference: str) -> int:
+        match = re.match(r"([A-Z]+)", (cell_reference or "").upper())
+        if not match:
+            return 0
+
+        column_index = 0
+        for letter in match.group(1):
+            column_index = (column_index * 26) + (ord(letter) - ord("A") + 1)
+        return column_index
+
+    def _parse_xlsx_cell_value(self, cell_node: ET.Element, shared_strings: List[str]) -> Any:
+        cell_type = cell_node.attrib.get("t")
+
+        if cell_type == "inlineStr":
+            text_parts = [
+                text_node.text or ""
+                for text_node in cell_node.findall(f".//{{{_XLSX_MAIN_NS}}}t")
+            ]
+            return "".join(text_parts)
+
+        value_node = cell_node.find(f"{{{_XLSX_MAIN_NS}}}v")
+        if value_node is None or value_node.text is None:
+            return None
+
+        raw_value = value_node.text
+        if cell_type == "s":
+            try:
+                return shared_strings[int(raw_value)]
+            except (ValueError, IndexError):
+                return raw_value
+        if cell_type == "b":
+            return "TRUE" if raw_value == "1" else "FALSE"
+
+        try:
+            numeric_value = float(raw_value)
+        except ValueError:
+            return raw_value
+
+        if numeric_value.is_integer():
+            return int(numeric_value)
+        return numeric_value
+
+    def _load_recursive_document(self, file_path: str, chunk_size: int, chunk_overlap: int,
+                                 metadata: Dict[str, Any]) -> List[Document]:
+        text = self._read_recursive_text(file_path)
+        temp_splitter = self._build_recursive_splitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            content_type=metadata.get("content_type", "general")
+        )
+        chunks = temp_splitter.split_text(text)
+        return [Document(page_content=chunk, metadata=dict(metadata)) for chunk in chunks]
+
+    def _extract_html_blocks(self, file_path: str) -> List[Dict[str, Any]]:
+        with open(file_path, "r", encoding="utf-8") as f:
+            html_text = f.read()
+
+        parser = _StructuredHTMLBlockParser()
+        parser.feed(html_text)
+        parser.close()
+        return parser.blocks
+
+    def _extract_docx_blocks(self, file_path: str) -> List[Dict[str, Any]]:
+        document = docx.Document(file_path)
+        blocks: List[Dict[str, Any]] = []
+        heading_stack: List[str] = []
+
+        for paragraph in document.paragraphs:
+            paragraph_text = paragraph.text.strip()
+            if not paragraph_text:
+                continue
+
+            style_name = getattr(getattr(paragraph, "style", None), "name", "") or ""
+            heading_match = re.match(r"Heading\s+(\d+)", style_name, re.IGNORECASE)
+
+            if heading_match:
+                level = max(1, int(heading_match.group(1)))
+                heading_stack = heading_stack[: level - 1]
+                heading_stack.append(paragraph_text)
+                continue
+
+            blocks.append(
+                {
+                    "heading_path": list(heading_stack),
+                    "text": paragraph_text,
+                }
+            )
+
+        return blocks
+
+    def _chunk_structured_blocks(self, blocks: List[Dict[str, Any]], chunk_size: int,
+                                 chunk_overlap: int, metadata: Dict[str, Any]) -> List[Document]:
+        documents: List[Document] = []
+        content_type = metadata.get("content_type", "general")
+
+        for block_index, block in enumerate(blocks):
+            block_text = (block.get("text") or "").strip()
+            if not block_text:
+                continue
+
+            heading_path = [part.strip() for part in block.get("heading_path", []) if part and part.strip()]
+            heading_label = " > ".join(heading_path)
+
+            if heading_label:
+                prefix = f"{heading_label}\n"
+                body_chunk_size = max(1, chunk_size - len(prefix))
+            else:
+                prefix = ""
+                body_chunk_size = chunk_size
+
+            body_chunk_overlap = min(chunk_overlap, max(body_chunk_size - 1, 0))
+            splitter = self._build_recursive_splitter(
+                chunk_size=body_chunk_size,
+                chunk_overlap=body_chunk_overlap,
+                content_type=content_type
+            )
+            body_chunks = splitter.split_text(block_text) or [block_text]
+
+            for chunk_part_index, body_chunk in enumerate(body_chunks):
+                chunk_metadata = dict(metadata)
+                if heading_label:
+                    chunk_metadata["heading_path"] = heading_label
+                chunk_metadata["structured_block_index"] = block_index
+                chunk_metadata["structured_chunk_index"] = chunk_part_index
+                documents.append(
+                    Document(
+                        page_content=f"{prefix}{body_chunk}" if prefix else body_chunk,
+                        metadata=chunk_metadata,
+                    )
+                )
+
+        return documents
+
+    def _load_structured_document(self, file_path: str, chunk_size: int, chunk_overlap: int,
+                                  metadata: Dict[str, Any]) -> List[Document]:
+        file_ext = os.path.splitext(file_path)[1].lower()
+
+        if file_ext in {".html", ".htm"}:
+            blocks = self._extract_html_blocks(file_path)
+            return self._chunk_structured_blocks(blocks, chunk_size, chunk_overlap, metadata)
+        if file_ext == ".docx":
+            blocks = self._extract_docx_blocks(file_path)
+            return self._chunk_structured_blocks(blocks, chunk_size, chunk_overlap, metadata)
+
+        return self._load_recursive_document(file_path, chunk_size, chunk_overlap, metadata)
+
+    def _load_table_document(self, file_path: str, chunk_size: int, chunk_overlap: int,
+                             metadata: Dict[str, Any]) -> List[Document]:
+        documents: List[Document] = []
+        overlap_rows = 1 if chunk_overlap > 0 else 0
+
+        for sheet_name, sheet_rows in self._load_xlsx_rows(file_path):
+            if not sheet_rows:
+                continue
+
+            max_columns = max((len(row) for row in sheet_rows), default=0)
+            if max_columns == 0:
+                continue
+
+            header_row = list(sheet_rows[0]) + [None] * (max_columns - len(sheet_rows[0]))
+            headers = [
+                str(value).strip() if value is not None and str(value).strip() != "" else f"Column {index + 1}"
+                for index, value in enumerate(header_row)
+            ]
+            body_rows = [
+                (
+                    row_number,
+                    list(row) + [None] * (max_columns - len(row)),
+                )
+                for row_number, row in enumerate(sheet_rows[1:], start=2)
+                if any(cell is not None and str(cell).strip() != "" for cell in row)
+            ]
+            if not body_rows:
+                continue
+
+            start_index = 0
+            while start_index < len(body_rows):
+                chunk_row_lines: List[str] = []
+                end_index = start_index
+
+                while end_index < len(body_rows):
+                    row_number, row_values = body_rows[end_index]
+                    value_text = " | ".join(
+                        "" if cell is None else str(cell).strip()
+                        for cell in row_values
+                    )
+                    candidate_lines = chunk_row_lines + [f"{row_number}: {value_text}"]
+                    candidate_content = "\n".join(
+                        [
+                            f"Sheet: {sheet_name}",
+                            f"Headers: {' | '.join(headers)}",
+                            f"Rows {body_rows[start_index][0]}-{row_number}",
+                            *candidate_lines,
+                        ]
+                    )
+                    if chunk_row_lines and len(candidate_content) > chunk_size:
+                        break
+                    chunk_row_lines = candidate_lines
+                    end_index += 1
+
+                if not chunk_row_lines:
+                    row_number, row_values = body_rows[start_index]
+                    chunk_row_lines = [
+                        f"{row_number}: "
+                        + " | ".join("" if cell is None else str(cell).strip() for cell in row_values)
+                    ]
+                    end_index = start_index + 1
+
+                start_row = body_rows[start_index][0]
+                end_row = body_rows[end_index - 1][0]
+                chunk_metadata = dict(metadata)
+                chunk_metadata["sheet_name"] = sheet_name
+                chunk_metadata["row_range"] = f"{start_row}-{end_row}"
+                documents.append(
+                    Document(
+                        page_content="\n".join(
+                            [
+                                f"Sheet: {sheet_name}",
+                                f"Headers: {' | '.join(headers)}",
+                                f"Rows {start_row}-{end_row}",
+                                *chunk_row_lines,
+                            ]
+                        ),
+                        metadata=chunk_metadata,
+                    )
+                )
+
+                if end_index >= len(body_rows):
+                    break
+                if overlap_rows:
+                    start_index = max(start_index + 1, end_index - overlap_rows)
+                else:
+                    start_index = end_index
+
+        return documents
+
     def load_document(self, file_path: str, chunk_size: int = None, chunk_overlap: int = None,
                        metadata: Optional[Dict[str, Any]] = None,
                        content_type_hint: str = None) -> List[Document]:
@@ -920,52 +1447,48 @@ class RAGTool:
         if not os.path.exists(file_path):
             raise ValueError(f"文档不存在: {file_path}")
 
-        metadata = metadata or {}
+        metadata = dict(metadata or {})
         metadata["file_path"] = file_path
         metadata["update_time"] = datetime.now().isoformat()
 
         # 内容类型检测
         content_type = content_type_hint or self._detect_content_type(file_path)
         metadata["content_type"] = content_type
-        strategy = self.CHUNKING_STRATEGIES.get(content_type, self.CHUNKING_STRATEGIES["general"])
 
         # 如果没有提供参数，使用内容类型策略
         if chunk_size is None:
             chunk_size = self.text_splitter._chunk_size
         if chunk_overlap is None:
             chunk_overlap = self.text_splitter._chunk_overlap
+        document_strategy = self._detect_document_strategy(file_path)
+        metadata["document_strategy"] = document_strategy
 
-        # 根据内容类型选择分割策略
-        if content_type == "price_list":
-            # 价格表：优先按产品边界分割，确保每个产品完整
-            # 使用 "===== " 行作为产品分隔符，保持完整产品在一个chunk
-            separators = ["\n===== ", "\n\n", "\n", "。", "！", "？", "，", "、", ""]
+        if document_strategy == "structured_document":
+            documents = self._load_structured_document(
+                file_path=file_path,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+                metadata=metadata
+            )
+        elif document_strategy == "table_document":
+            documents = self._load_table_document(
+                file_path=file_path,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+                metadata=metadata
+            )
         else:
-            separators = ["\n\n", "\n", "。", "！", "？", "，", "、", " ", ""]
+            documents = self._load_recursive_document(
+                file_path=file_path,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+                metadata=metadata
+            )
 
-        temp_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-            separators=separators
+        app_logger.info(
+            f"鏂囨。鍔犺浇瀹屾垚: {file_path}锛屽垏鍒嗕负{len(documents)}鍧?"
+            f" (type={content_type}, strategy={document_strategy}, size={chunk_size}, overlap={chunk_overlap})"
         )
-
-        if file_path.endswith(".pdf"):
-            with pdfplumber.open(file_path) as pdf:
-                text = "\n".join([page.extract_text() for page in pdf.pages if page.extract_text()])
-        elif file_path.endswith(".docx"):
-            doc = docx.Document(file_path)
-            text = "\n".join([para.text for para in doc.paragraphs if para.text])
-        elif file_path.endswith(".txt"):
-            with open(file_path, "r", encoding="utf-8") as f:
-                text = f.read()
-        else:
-            raise ValueError(f"不支持的文件类型: {file_path}")
-
-        # 使用临时分割器
-        chunks = temp_splitter.split_text(text)
-        documents = [Document(page_content=chunk, metadata=metadata) for chunk in chunks]
-
-        app_logger.info(f"文档加载完成: {file_path}，切分为{len(documents)}块 (type={content_type}, size={chunk_size}, overlap={chunk_overlap})")
         self.metrics.record_documents_processed(len(documents))
         return documents
 

@@ -1,19 +1,30 @@
 from __future__ import annotations
 
 import hashlib
+from importlib import import_module
 import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
+from config.settings import settings
 from app.services.audit_log_service import AuditLogService
 from app.services.rag_runtime import get_loaded_rag_tool, get_rag_tool, rag_params_manager
 
 
 ALL_KNOWLEDGE_ROLES = ["user", "operator", "admin", "super_admin"]
-ALLOWED_DOC_EXTENSIONS = {".txt", ".pdf", ".docx"}
+ALLOWED_DOC_EXTENSIONS = {".txt", ".pdf", ".docx", ".html", ".htm", ".xlsx"}
 REGISTRY_VERSION = 2
+
+_chromadb_module = None
+
+
+def _get_chromadb_module():
+    global _chromadb_module
+    if _chromadb_module is None:
+        _chromadb_module = import_module("chromadb")
+    return _chromadb_module
 
 
 class KnowledgeConflictError(ValueError):
@@ -120,6 +131,51 @@ class KnowledgeAdminService:
         digest = hashlib.sha256()
         digest.update(file_path.read_bytes())
         return digest.hexdigest()
+
+    @staticmethod
+    def _normalize_source_path(source: Optional[str]) -> str:
+        value = str(source or "").strip()
+        if not value:
+            return ""
+        try:
+            return str(Path(value).expanduser().resolve(strict=False))
+        except OSError:
+            return str(Path(value).expanduser())
+
+    def _get_vector_collection(self):
+        try:
+            rag_tool = get_loaded_rag_tool()
+        except Exception:
+            rag_tool = None
+        collection = getattr(rag_tool, "collection", None)
+        if collection is not None:
+            return collection
+
+        try:
+            chromadb_module = _get_chromadb_module()
+            client = chromadb_module.PersistentClient(path=str(self._project_root() / "chroma_data"))
+            return client.get_collection(settings.vector_db.vector_db_collection_name)
+        except Exception:
+            return None
+
+    def _chunk_counts_by_source(self) -> Dict[str, int]:
+        collection = self._get_vector_collection()
+        if collection is None:
+            return {}
+        try:
+            payload = collection.get(include=["metadatas"])
+        except Exception:
+            return {}
+
+        counts: Dict[str, int] = {}
+        for metadata in payload.get("metadatas") or []:
+            if not isinstance(metadata, dict):
+                continue
+            source = self._normalize_source_path(metadata.get("source_file") or metadata.get("file_path"))
+            if not source:
+                continue
+            counts[source] = counts.get(source, 0) + 1
+        return counts
 
     def _history_root(self, document_id: str) -> Path:
         root = self.history_dir / document_id
@@ -230,6 +286,7 @@ class KnowledgeAdminService:
     def _sync_registry_with_files(self, registry: Dict[str, Any]) -> Dict[str, Any]:
         changed = False
         documents = registry.setdefault("documents", {})
+        chunk_counts = self._chunk_counts_by_source()
         by_storage_name = {
             Path(record.get("storage_name") or record.get("filename") or "").name: document_id
             for document_id, record in documents.items()
@@ -249,17 +306,24 @@ class KnowledgeAdminService:
                     filename=record.get("filename") or document_path.name,
                     legacy=record,
                 )
+                normalized_source = self._normalize_source_path(refreshed.get("storage_path") or document_path)
+                if normalized_source in chunk_counts:
+                    refreshed["chunk_count"] = chunk_counts[normalized_source]
                 if refreshed != record:
                     documents[document_id] = refreshed
                     changed = True
                 continue
 
             new_document_id = self._new_document_id()
-            documents[new_document_id] = self._build_record(
+            new_record = self._build_record(
                 document_id=new_document_id,
                 file_path=document_path,
                 filename=document_path.name,
             )
+            normalized_source = self._normalize_source_path(new_record.get("storage_path") or document_path)
+            if normalized_source in chunk_counts:
+                new_record["chunk_count"] = chunk_counts[normalized_source]
+            documents[new_document_id] = new_record
             changed = True
 
         if changed:
