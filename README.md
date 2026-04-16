@@ -6,11 +6,13 @@
 
 ## 当前阶段
 
-截至 2026-04-15，项目已完成：
+截至 2026-04-16，项目主线已完成：
 
 - Phase 1：统一后台骨架、角色权限、记忆管理后台、只读前台设置摘要、知识库基础显隐控制
 - Phase 2：知识库后台完整流程
-- Phase 3（当前分支进行中）：知识库版本历史与安全回滚
+- Phase 3：知识库版本历史与安全回滚
+- 账号管理 Phase 2：账号详情、状态启停、角色调整
+- 系统设置 Phase 2：运行参数、前台展示策略、权限说明
 
 当前后台知识库模块已经支持：
 
@@ -178,8 +180,11 @@ npm run admin
 - 系统设置
   - `GET /api/admin/settings/summary`
   - `POST /api/admin/settings/runtime`
+  - `POST /api/admin/settings/frontend-policy`
 - 账号管理
   - `GET /api/admin/users`
+  - `GET /api/admin/users/{user_id}`
+  - `PATCH /api/admin/users/{user_id}/status`
   - `PATCH /api/admin/users/{user_id}/role`
 
 更详细的接口说明见 [docs/admin-api.md](./docs/admin-api.md)。
