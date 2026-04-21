@@ -43,7 +43,9 @@ from tools.rag.query_understanding import QueryUnderstandingLayer
 from tools.rag.generation_context import GenerationContextLayer
 from tools.rag.bm25_ranker import ProfessionalBM25
 from tools.rag.cache_policy import build_retrieval_cache_key, normalize_retrieval_policy
+from tools.rag.chroma_backend import ChromaVectorStoreBackend
 from tools.rag.redis_cache_manager import get_cache_manager, RetrievalCache
+from tools.rag.vector_store_backend import VectorSearchRequest
 
 app_logger = LoggerManager.get_logger("rag_tool")
 
@@ -910,6 +912,7 @@ class RAGTool:
 
         self.chroma_client = None
         self.collection = None
+        self.vector_backend = None
         self._db_available = False
         self._collection_name = settings.vector_db.vector_db_collection_name
 
@@ -1565,6 +1568,16 @@ class RAGTool:
                 app_logger.error(f"创建集合失败: {e}")
                 raise RuntimeError(f"无法创建集合: {e}")
     
+    def _refresh_vector_backend(self) -> None:
+        if self._db_available and self.collection is not None:
+            self.vector_backend = ChromaVectorStoreBackend(
+                collection=self.collection,
+                embeddings=self.embeddings,
+                available=True,
+            )
+        else:
+            self.vector_backend = None
+
     def add_documents_to_vector_db(self, documents: List[Document]) -> List[str]:
         """将文档写入向量数据库（含去重机制）
 
@@ -2051,31 +2064,26 @@ class RAGTool:
             return []
 
         try:
-            query_embedding = self.embeddings.embed_query(query)
-
-            results = self.collection.query(
-                query_embeddings=[query_embedding],
-                n_results=top_k,
-                include=["documents", "metadatas", "distances"]
-            )
+            self._refresh_vector_backend()
+            if self.vector_backend is None:
+                return []
 
             documents = []
-            if results and results['documents'] and results['documents'][0]:
-                for i, doc_text in enumerate(results['documents'][0]):
-                    metadata = results['metadatas'][0][i] if results['metadatas'] else {}
-                    distance = results['distances'][0][i] if results['distances'] else 0.0
+            backend_results = self.vector_backend.search(VectorSearchRequest(query=query, top_k=top_k))
+            for result in backend_results:
+                metadata = dict(result.metadata or {})
 
-                    # 检查源文件是否存在
-                    source_file = metadata.get('file_path', '')
-                    if source_file and not os.path.exists(source_file):
-                        app_logger.warning(f"[向量检索] 跳过已删除的文件: {source_file}")
-                        continue
+                # 检查源文件是否存在
+                source_file = metadata.get('file_path', '')
+                if source_file and not os.path.exists(source_file):
+                    app_logger.warning(f"[向量检索] 跳过已删除的文件: {source_file}")
+                    continue
 
-                    doc = Document(
-                        page_content=doc_text,
-                        metadata={**metadata, "score": distance}
-                    )
-                    documents.append(doc)
+                doc = Document(
+                    page_content=result.content,
+                    metadata={**metadata, "score": result.score}
+                )
+                documents.append(doc)
 
             return documents
         except Exception as e:
@@ -2086,22 +2094,18 @@ class RAGTool:
                 if self.ensure_collection_ready():
                     # 重新尝试检索
                     try:
-                        query_embedding = self.embeddings.embed_query(query)
-                        results = self.collection.query(
-                            query_embeddings=[query_embedding],
-                            n_results=top_k,
-                            include=["documents", "metadatas", "distances"]
-                        )
+                        self._refresh_vector_backend()
+                        if self.vector_backend is None:
+                            return []
                         documents = []
-                        if results and results['documents'] and results['documents'][0]:
-                            for i, doc_text in enumerate(results['documents'][0]):
-                                metadata = results['metadatas'][0][i] if results['metadatas'] else {}
-                                distance = results['distances'][0][i] if results['distances'] else 0.0
-                                doc = Document(
-                                    page_content=doc_text,
-                                    metadata={**metadata, "score": distance}
-                                )
-                                documents.append(doc)
+                        backend_results = self.vector_backend.search(VectorSearchRequest(query=query, top_k=top_k))
+                        for result in backend_results:
+                            metadata = dict(result.metadata or {})
+                            doc = Document(
+                                page_content=result.content,
+                                metadata={**metadata, "score": result.score}
+                            )
+                            documents.append(doc)
                         return documents
                     except Exception as retry_error:
                         app_logger.error(f"[向量检索] 重试失败: {retry_error}")
