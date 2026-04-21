@@ -45,7 +45,11 @@ from tools.rag.bm25_ranker import ProfessionalBM25
 from tools.rag.cache_policy import build_retrieval_cache_key, normalize_retrieval_policy
 from tools.rag.chroma_backend import ChromaVectorStoreBackend
 from tools.rag.redis_cache_manager import get_cache_manager, RetrievalCache
-from tools.rag.vector_store_backend import VectorSearchRequest
+from tools.rag.vector_store_backend import (
+    VectorSearchRequest,
+    build_vector_metadata_filter,
+    metadata_matches_filter,
+)
 
 app_logger = LoggerManager.get_logger("rag_tool")
 
@@ -2049,7 +2053,12 @@ class RAGTool:
                 "adaptive_top_k": default_top_k
             }
 
-    def _vector_search(self, query: str, top_k: int) -> List[Document]:
+    def _vector_search(
+        self,
+        query: str,
+        top_k: int,
+        metadata_filter: Optional[Dict[str, Any]] = None,
+    ) -> List[Document]:
         """执行向量检索"""
         # 确保集合存在
         try:
@@ -2069,7 +2078,13 @@ class RAGTool:
                 return []
 
             documents = []
-            backend_results = self.vector_backend.search(VectorSearchRequest(query=query, top_k=top_k))
+            backend_results = self.vector_backend.search(
+                VectorSearchRequest(
+                    query=query,
+                    top_k=top_k,
+                    metadata_filter=metadata_filter,
+                )
+            )
             for result in backend_results:
                 metadata = dict(result.metadata or {})
 
@@ -2098,7 +2113,13 @@ class RAGTool:
                         if self.vector_backend is None:
                             return []
                         documents = []
-                        backend_results = self.vector_backend.search(VectorSearchRequest(query=query, top_k=top_k))
+                        backend_results = self.vector_backend.search(
+                            VectorSearchRequest(
+                                query=query,
+                                top_k=top_k,
+                                metadata_filter=metadata_filter,
+                            )
+                        )
                         for result in backend_results:
                             metadata = dict(result.metadata or {})
                             doc = Document(
@@ -2312,6 +2333,7 @@ class RAGTool:
                 "enable_rerank": use_rerank,
             }
         )
+        vector_metadata_filter = build_vector_metadata_filter(effective_retrieval_policy)
         
         # 调试日志：检查查询增强条件
         app_logger.info(f"[retrieve] Query: '{query}', chat_history: {len(chat_history)}, llm: {llm is not None}")
@@ -2407,7 +2429,11 @@ class RAGTool:
             search_top_k = actual_top_k * 2 if use_rerank else actual_top_k
             
             # 执行向量检索
-            docs = self._vector_search(contextualized_query, search_top_k)
+            docs = self._vector_search(
+                contextualized_query,
+                search_top_k,
+                metadata_filter=vector_metadata_filter,
+            )
 
             formatted_docs = []
             for doc in docs:
@@ -2437,6 +2463,8 @@ class RAGTool:
                             bm25_docs = []
                             for i, doc_text in enumerate(all_docs.get("documents", [])):
                                 metadata = all_docs.get("metadatas", [])[i] if i < len(all_docs.get("metadatas", [])) else {}
+                                if not metadata_matches_filter(metadata, vector_metadata_filter):
+                                    continue
                                 bm25_docs.append({
                                     "content": doc_text,
                                     "metadata": metadata,
@@ -2465,6 +2493,8 @@ class RAGTool:
 
                 for r in bm25_results:
                     source_file = r.metadata.get("source_file", r.metadata.get("file_path", ""))
+                    if not metadata_matches_filter(r.metadata, vector_metadata_filter):
+                        continue
 
                     # 关键修复：检查源文件是否存在（与向量搜索保持一致，见1382-1386行）
                     if source_file and not os.path.exists(source_file):

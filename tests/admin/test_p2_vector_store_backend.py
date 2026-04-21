@@ -1,6 +1,8 @@
 from tools.rag.vector_store_backend import (
     VectorSearchRequest,
     VectorStoreCapabilities,
+    build_vector_metadata_filter,
+    metadata_matches_filter,
 )
 from tools.rag.chroma_backend import ChromaVectorStoreBackend
 
@@ -88,3 +90,40 @@ def test_chroma_backend_search_returns_empty_when_unavailable():
     )
 
     assert backend.search(VectorSearchRequest(query="hello", top_k=2)) == []
+
+
+def test_build_vector_metadata_filter_uses_non_default_tenant_and_safe_overrides():
+    metadata_filter = build_vector_metadata_filter(
+        {
+            "tenant_id": "tenant-a",
+            "vector_metadata_filter": {
+                "department": "support",
+                "visible_to_frontend": True,
+                "allowed_roles": ["user"],
+                "nested": {"unsafe": "shape"},
+            },
+        }
+    )
+
+    assert metadata_filter == {
+        "tenant_id": "tenant-a",
+        "department": "support",
+        "visible_to_frontend": True,
+    }
+
+
+def test_build_vector_metadata_filter_ignores_default_tenant():
+    assert build_vector_metadata_filter({"tenant_id": "default"}) is None
+
+
+def test_metadata_matches_filter_supports_hybrid_bm25_fallback_filtering():
+    metadata_filter = {"tenant_id": "tenant-a", "visible_to_frontend": True}
+
+    assert metadata_matches_filter(
+        {"tenant_id": "tenant-a", "visible_to_frontend": True},
+        metadata_filter,
+    )
+    assert not metadata_matches_filter(
+        {"tenant_id": "tenant-b", "visible_to_frontend": True},
+        metadata_filter,
+    )
