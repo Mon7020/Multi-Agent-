@@ -1,6 +1,7 @@
 from tools.rag.vector_store_backend import (
     VectorSearchRequest,
     VectorStoreCapabilities,
+    build_vector_access_metadata,
     build_vector_metadata_filter,
     metadata_matches_filter,
 )
@@ -127,3 +128,45 @@ def test_metadata_matches_filter_supports_hybrid_bm25_fallback_filtering():
         {"tenant_id": "tenant-b", "visible_to_frontend": True},
         metadata_filter,
     )
+
+
+def test_build_vector_access_metadata_normalizes_registry_record_for_vector_filters():
+    access_metadata = build_vector_access_metadata(
+        source_metadata={"tenant_id": "tenant-a"},
+        access_record={
+            "document_id": "doc-alpha",
+            "published": True,
+            "visible_to_frontend": True,
+            "allowed_roles": ["user", "admin"],
+            "deleted": False,
+        },
+    )
+
+    assert access_metadata == {
+        "tenant_id": "tenant-a",
+        "access_managed": True,
+        "access_document_id": "doc-alpha",
+        "access_published": True,
+        "access_visible_to_frontend": True,
+        "access_deleted": False,
+        "access_role_user": True,
+        "access_role_operator": False,
+        "access_role_admin": True,
+        "access_role_super_admin": False,
+    }
+
+
+def test_build_vector_access_metadata_denies_unmanaged_sources():
+    access_metadata = build_vector_access_metadata(
+        source_metadata={},
+        access_record=None,
+    )
+
+    assert access_metadata["tenant_id"] == "default"
+    assert access_metadata["access_managed"] is False
+    assert access_metadata["access_published"] is False
+    assert access_metadata["access_visible_to_frontend"] is False
+    assert access_metadata["access_role_user"] is False
+    assert access_metadata["access_role_operator"] is False
+    assert access_metadata["access_role_admin"] is False
+    assert access_metadata["access_role_super_admin"] is False

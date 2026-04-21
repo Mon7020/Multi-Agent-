@@ -219,6 +219,60 @@ class KnowledgeAdminRegistryTest(unittest.TestCase):
         self.assertEqual(len(documents), 1)
         self.assertEqual(documents[0]["chunk_count"], 3)
 
+    def test_vector_access_metadata_for_source_uses_registry_record(self):
+        alpha_path = self.docs_dir / "alpha.txt"
+        alpha_path.write_text("alpha content", encoding="utf-8")
+        self.metadata_path.write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "documents": {
+                        "doc_alpha": {
+                            "document_id": "doc_alpha",
+                            "current_version_id": None,
+                            "filename": "alpha.txt",
+                            "file_type": ".txt",
+                            "storage_name": "alpha.txt",
+                            "storage_path": str(alpha_path.resolve()),
+                            "size": alpha_path.stat().st_size,
+                            "checksum": "checksum-alpha",
+                            "chunk_count": 0,
+                            "description": "",
+                            "tags": [],
+                            "published": True,
+                            "visible_to_frontend": True,
+                            "allowed_roles": ["user", "admin"],
+                            "deleted": False,
+                            "created_at": "2026-04-22T00:00:00",
+                            "created_by": "admin-1",
+                            "updated_at": "2026-04-22T00:00:00",
+                            "updated_by": "admin-1",
+                            "deleted_at": None,
+                            "deleted_by": None,
+                        }
+                    },
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        access_metadata = knowledge_admin_service.get_vector_access_metadata_for_source(
+            str(alpha_path.resolve()),
+            tenant_id="tenant-a",
+        )
+
+        self.assertEqual(access_metadata["tenant_id"], "tenant-a")
+        self.assertEqual(access_metadata["access_managed"], True)
+        self.assertEqual(access_metadata["access_document_id"], "doc_alpha")
+        self.assertEqual(access_metadata["access_published"], True)
+        self.assertEqual(access_metadata["access_visible_to_frontend"], True)
+        self.assertEqual(access_metadata["access_role_user"], True)
+        self.assertEqual(access_metadata["access_role_operator"], False)
+        self.assertEqual(access_metadata["access_role_admin"], True)
+        self.assertEqual(access_metadata["access_role_super_admin"], False)
+
 
 if __name__ == "__main__":
     unittest.main()

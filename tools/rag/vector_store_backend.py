@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Protocol
 
 ScalarMetadataValue = str | int | float | bool
+ACCESS_ROLES = ("user", "operator", "admin", "super_admin")
 
 
 @dataclass
@@ -77,3 +78,27 @@ def metadata_matches_filter(
 
 def _is_scalar_metadata_value(value: Any) -> bool:
     return isinstance(value, (str, int, float, bool)) and value is not None
+
+
+def build_vector_access_metadata(
+    source_metadata: Optional[Dict[str, Any]],
+    access_record: Optional[Dict[str, Any]],
+) -> Dict[str, ScalarMetadataValue]:
+    source_metadata = source_metadata if isinstance(source_metadata, dict) else {}
+    tenant_id = str(source_metadata.get("tenant_id") or "default").strip() or "default"
+
+    metadata: Dict[str, ScalarMetadataValue] = {
+        "tenant_id": tenant_id,
+        "access_managed": bool(access_record),
+        "access_document_id": str((access_record or {}).get("document_id") or ""),
+        "access_published": bool((access_record or {}).get("published")),
+        "access_visible_to_frontend": bool((access_record or {}).get("visible_to_frontend")),
+        "access_deleted": bool((access_record or {}).get("deleted")),
+    }
+
+    allowed_roles = (access_record or {}).get("allowed_roles") or []
+    allowed_role_set = {str(role) for role in allowed_roles if role}
+    for role in ACCESS_ROLES:
+        metadata[f"access_role_{role}"] = role in allowed_role_set
+
+    return metadata

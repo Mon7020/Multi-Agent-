@@ -11,6 +11,7 @@ from uuid import uuid4
 from config.settings import settings
 from app.services.audit_log_service import AuditLogService
 from app.services.rag_runtime import get_loaded_rag_tool, get_rag_tool, rag_params_manager
+from tools.rag.vector_store_backend import build_vector_access_metadata
 
 
 ALL_KNOWLEDGE_ROLES = ["user", "operator", "admin", "super_admin"]
@@ -584,6 +585,34 @@ class KnowledgeAdminService:
             filtered.append(document_copy)
 
         return filtered
+
+    def get_vector_access_metadata_for_source(self, source: str, tenant_id: str = "default") -> Dict[str, Any]:
+        registry = self._load_registry()
+        record = self._find_record_by_source(source, registry)
+        return build_vector_access_metadata({"tenant_id": tenant_id}, record)
+
+    def _find_record_by_source(
+        self,
+        source: str,
+        registry: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        if not source:
+            return None
+
+        registry = registry or self._load_registry()
+        source_key = self._normalize_source_path(source)
+        filename_key = Path(str(source)).name
+
+        for record in registry.get("documents", {}).values():
+            storage_path = self._normalize_source_path(record.get("storage_path"))
+            if source_key and storage_path == source_key:
+                return record
+
+            record_filename = Path(record.get("storage_name") or record.get("filename") or "").name
+            if filename_key and record_filename == filename_key:
+                return record
+
+        return None
 
     def list_frontend_documents(self, role: str) -> List[Dict[str, Any]]:
         return [

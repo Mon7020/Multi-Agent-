@@ -47,6 +47,7 @@ from tools.rag.chroma_backend import ChromaVectorStoreBackend
 from tools.rag.redis_cache_manager import get_cache_manager, RetrievalCache
 from tools.rag.vector_store_backend import (
     VectorSearchRequest,
+    build_vector_access_metadata,
     build_vector_metadata_filter,
     metadata_matches_filter,
 )
@@ -1677,6 +1678,7 @@ class RAGTool:
             metadata["chunk_index"] = i
             metadata["source_file"] = source_file or metadata.get("file_path", "未知")
             metadata["content_hash"] = content_hash  # 新增：存储content_hash供后续去重使用
+            metadata.update(self._build_vector_access_metadata(metadata))
 
             self.collection.add(
                 ids=[doc_id],
@@ -1688,6 +1690,20 @@ class RAGTool:
         app_logger.info(f"{len(unique_documents)}个文档块写入向量数据库（已去重），来源: {source_file}")
         self._invalidate_cache()
         return ids
+
+    def _build_vector_access_metadata(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        source = metadata.get("source_file") or metadata.get("file_path")
+        tenant_id = str(metadata.get("tenant_id") or "default")
+        try:
+            from app.services.knowledge_admin_service import knowledge_admin_service
+
+            return knowledge_admin_service.get_vector_access_metadata_for_source(
+                source,
+                tenant_id=tenant_id,
+            )
+        except Exception as e:
+            app_logger.warning(f"[access-metadata] failed to resolve source access policy: {e}")
+            return build_vector_access_metadata(metadata, None)
 
     def _invalidate_cache(self):
         """清除缓存"""
