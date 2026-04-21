@@ -21,6 +21,7 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     session_id: str
+    trace_id: Optional[str] = None
     message: str
     customer_type: Optional[str] = None
     skills_used: List[str] = Field(default_factory=list)
@@ -31,6 +32,7 @@ class ChatResponse(BaseModel):
     retrieved_documents: List[Dict[str, Any]] = Field(default_factory=list)
     retrieved_count: int = 0
     has_relevant_info: bool = False
+    rag_fallback: Optional[Dict[str, Any]] = None
     context_summary: Optional[Dict[str, Any]] = None
     fusion_info: Optional[Dict[str, Any]] = Field(default=None, description="context+rAG fusion info")
     greeting: Optional[str] = Field(default=None, description="new-session greeting")

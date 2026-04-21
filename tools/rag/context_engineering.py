@@ -22,7 +22,7 @@ import json
 import os
 from typing import Dict, List, Any, Optional, Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from collections import defaultdict
 import tiktoken
@@ -552,16 +552,41 @@ class LongTermMemoryManager:
         value: Any,
         source: str = "system_inferred",
         confidence: float = 0.6,
+        importance: float = 0.5,
+        ttl_seconds: Optional[int] = None,
+        consent: bool = True,
     ):
         """?????????????"""
         profile = self.get_or_create_profile(user_id)
         now = datetime.now().isoformat()
+        expires_at = (
+            (datetime.now() + timedelta(seconds=ttl_seconds)).isoformat()
+            if ttl_seconds
+            else None
+        )
+        normalized_importance = max(0.0, min(float(importance), 1.0))
 
         source_priority = {
             "explicit_user": 3,
             "authenticated_profile_sync": 2,
             "system_inferred": 1,
         }
+
+        if not consent:
+            profile.preference_history.append(
+                {
+                    "key": key,
+                    "value": value,
+                    "source": source,
+                    "confidence": confidence,
+                    "importance": normalized_importance,
+                    "ttl_seconds": ttl_seconds,
+                    "consent": False,
+                    "timestamp": now,
+                    "skipped_reason": "missing_consent",
+                }
+            )
+            return
 
         old_value = profile.preferences.get(key)
         old_meta = profile.preference_meta.get(key, {})
@@ -573,6 +598,10 @@ class LongTermMemoryManager:
             "value": value,
             "source": source,
             "confidence": confidence,
+            "importance": normalized_importance,
+            "ttl_seconds": ttl_seconds,
+            "expires_at": expires_at,
+            "consent": consent,
             "timestamp": now,
         }
         profile.preference_history.append(history_entry)
@@ -611,6 +640,10 @@ class LongTermMemoryManager:
             profile.preference_meta[key] = {
                 "source": source,
                 "confidence": confidence,
+                "importance": normalized_importance,
+                "ttl_seconds": ttl_seconds,
+                "expires_at": expires_at,
+                "consent": consent,
                 "updated_at": now,
             }
             logger.debug(

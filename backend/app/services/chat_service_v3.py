@@ -4,6 +4,7 @@ import asyncio
 import os
 import sys
 import threading
+from uuid import uuid4
 from datetime import datetime
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
@@ -11,9 +12,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirna
 
 from agents.supervisor_agent import SupervisorAgent
 from app.config import settings
+from app.services.auth_service import auth_service
+from app.services.knowledge_admin_service import knowledge_admin_service
 from app.services.rag_runtime import get_rag_tool, rag_params_manager
 from core.session_context import SessionContext, SessionContextManager
 from langchain_openai import ChatOpenAI
+from tools.rag.fallback_policy import plan_low_quality_rag_fallback
 from tools.rag.context_rag_fusion import RetrievalQuality, context_rag_fusion_layer
 
 
@@ -140,6 +144,7 @@ class ChatServiceV3:
     ) -> Dict[str, Any]:
         try:
             self._validate_session_access(None, user_id or "")
+            trace_id = f"trace_{uuid4().hex}"
             await self._ensure_documents_loaded_async()
 
             context = self.session_manager.get_session(session_id, user_id=user_id)
@@ -149,20 +154,33 @@ class ChatServiceV3:
             if context is None:
                 context = self.session_manager.create_session(session_id=session_id, user_id=user_id)
                 is_new_session = True
+            context.metadata["trace_id"] = trace_id
+            user_role = self._get_user_role(user_id or "")
+            retrieval_policy = self._build_retrieval_policy(user_role=user_role)
+            context.metadata["retrieval_policy"] = retrieval_policy
 
             if history:
                 self._sync_history_to_context(context, history, message)
 
             if enable_context_rag_fusion:
-                fusion_result = await self._process_with_fusion(context, message)
+                fusion_result = await self._process_with_fusion(context, message, retrieval_policy, trace_id)
                 rag_result = {
                     "success": True,
                     "documents": fusion_result.metadata.get("retrieval_result", {}).get("documents", []),
                     "has_relevant_info": fusion_result.quality != RetrievalQuality.NONE,
                 }
             else:
-                rag_result = await self._retrieve_with_rag(message, context)
+                rag_result = await self._retrieve_with_rag(message, context, retrieval_policy, trace_id)
                 fusion_result = None
+
+            rag_fallback = plan_low_quality_rag_fallback(
+                message,
+                rag_result,
+                quality=fusion_result.quality.value if fusion_result else None,
+            )
+            if rag_fallback.get("needed"):
+                context.metadata["rag_fallback"] = rag_fallback
+                rag_result["fallback_decision"] = rag_fallback
 
             if rag_result.get("documents"):
                 context.update_rag_cache(message, rag_result["documents"])
@@ -175,7 +193,7 @@ class ChatServiceV3:
                     },
                 )
 
-            result = await self.supervisor.process(message, context)
+            result = await self.supervisor.process(message, context, trace_id=trace_id)
 
             context.add_turn(
                 role="assistant",
@@ -188,7 +206,9 @@ class ChatServiceV3:
                     "confidence": result.get("intent_confidence", result.get("confidence", 0.0)),
                     "entities": fusion_result.metadata.get("entities", []) if fusion_result else [],
                     "fusion_quality": fusion_result.quality.value if fusion_result else None,
+                    "trace_id": trace_id,
                 },
+                trace_id=trace_id,
             )
 
             try:
@@ -205,10 +225,12 @@ class ChatServiceV3:
                 "skills_used": result.get("skills_used", []),
                 "sources": result.get("sources", []),
                 "timestamp": datetime.now(),
+                "trace_id": trace_id,
                 "greeting": self.greeting_message if is_new_session else None,
                 "retrieved_documents": rag_result.get("documents", []),
                 "retrieved_count": len(rag_result.get("documents", [])),
                 "has_relevant_info": rag_result.get("has_relevant_info", False),
+                "rag_fallback": rag_result.get("fallback_decision"),
                 "context_summary": self._get_context_summary(context),
                 "fusion_info": {
                     "enabled": enable_context_rag_fusion,
@@ -216,6 +238,7 @@ class ChatServiceV3:
                     "strategy": fusion_result.fusion_strategy.value if fusion_result else "N/A",
                     "confidence": fusion_result.confidence if fusion_result else 0.0,
                     "context_strength": fusion_result.metadata.get("context_strength", 0) if fusion_result else 0,
+                    "trace_id": trace_id,
                 }
                 if fusion_result
                 else None,
@@ -237,6 +260,7 @@ class ChatServiceV3:
                 "skills_used": [],
                 "sources": [],
                 "timestamp": datetime.now(),
+                "trace_id": trace_id if "trace_id" in locals() else None,
                 "retrieved_documents": [],
                 "retrieved_count": 0,
                 "has_relevant_info": False,
@@ -270,10 +294,34 @@ class ChatServiceV3:
                 "customer_type": result.get("customer_type"),
                 "greeting": result.get("greeting"),
                 "skills_used": result.get("skills_used", []),
+                "trace_id": result.get("trace_id"),
             },
         }
 
-    async def _process_with_fusion(self, context: SessionContext, message: str) -> Any:
+    def _get_user_role(self, user_id: str) -> str:
+        try:
+            user = auth_service.get_user_by_id(user_id)
+            return str(user.get("role") or "user")
+        except Exception:
+            return "user"
+
+    def _build_retrieval_policy(self, user_role: str, tenant_id: str = "default") -> Dict[str, Any]:
+        runtime_params = rag_params_manager.get_params()
+        return {
+            "user_role": user_role,
+            "tenant_id": tenant_id,
+            "knowledge_version": knowledge_admin_service.get_access_policy_version(),
+            "enable_hybrid": runtime_params.get("enable_hybrid", True),
+            "enable_rerank": runtime_params.get("enable_rerank", True),
+        }
+
+    async def _process_with_fusion(
+        self,
+        context: SessionContext,
+        message: str,
+        retrieval_policy: Dict[str, Any],
+        trace_id: str,
+    ) -> Any:
         def rag_retrieval_func(query: str, metadata_hints: Dict[str, Any] = None) -> Dict[str, Any]:
             _ = metadata_hints
             try:
@@ -282,16 +330,23 @@ class ChatServiceV3:
 
                 chat_history = [{"role": t.role, "content": t.content} for t in context.turn_history[-6:]]
                 runtime_params = rag_params_manager.get_params()
-                return self.rag_tool.retrieve(
+                result = self.rag_tool.retrieve(
                     query=query,
                     top_k=runtime_params.get("top_k", 5),
                     enable_self_rag=True,
                     llm=self.llm,
-                    use_cache=True,
+                    use_cache=runtime_params.get("enable_cache", True),
                     use_hybrid=runtime_params.get("enable_hybrid", True),
                     use_rerank=runtime_params.get("enable_rerank", True),
                     chat_history=chat_history,
+                    retrieval_policy=retrieval_policy,
+                    trace_id=trace_id,
                 )
+                result["documents"] = knowledge_admin_service.filter_retrieved_documents_for_role(
+                    result.get("documents", []),
+                    role=retrieval_policy.get("user_role", "user"),
+                )
+                return result
             except Exception as e:
                 print(f"[ERR] RAG retrieval failed: {e}")
                 return {"documents": [], "success": False}
@@ -316,7 +371,13 @@ class ChatServiceV3:
             return "sales"
         return "general"
 
-    async def _retrieve_with_rag(self, query: str, context: SessionContext) -> Dict[str, Any]:
+    async def _retrieve_with_rag(
+        self,
+        query: str,
+        context: SessionContext,
+        retrieval_policy: Dict[str, Any],
+        trace_id: str,
+    ) -> Dict[str, Any]:
         if not self.rag_tool:
             return {"success": False, "documents": [], "has_relevant_info": False}
 
@@ -332,14 +393,19 @@ class ChatServiceV3:
                     top_k=runtime_params.get("top_k", 5),
                     enable_self_rag=True,
                     llm=self.llm,
-                    use_cache=True,
+                    use_cache=runtime_params.get("enable_cache", True),
                     use_hybrid=runtime_params.get("enable_hybrid", True),
                     use_rerank=runtime_params.get("enable_rerank", True),
                     chat_history=chat_history,
+                    retrieval_policy=retrieval_policy,
+                    trace_id=trace_id,
                 ),
             )
 
-            documents = retrieval_result.get("documents", [])
+            documents = knowledge_admin_service.filter_retrieved_documents_for_role(
+                retrieval_result.get("documents", []),
+                role=retrieval_policy.get("user_role", "user"),
+            )
             return {
                 "success": retrieval_result.get("success", False),
                 "documents": documents,

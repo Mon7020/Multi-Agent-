@@ -528,6 +528,63 @@ class KnowledgeAdminService:
     def can_user_access_document(self, filename: str, role: str) -> bool:
         return self.can_role_access(self.get_document_access(filename), role)
 
+    def get_access_policy_version(self) -> str:
+        registry = self._load_registry()
+        policy_payload = [
+            {
+                "document_id": document_id,
+                "storage_path": self._normalize_source_path(record.get("storage_path")),
+                "published": bool(record.get("published")),
+                "visible_to_frontend": bool(record.get("visible_to_frontend")),
+                "allowed_roles": self._normalize_roles(record.get("allowed_roles")),
+                "deleted": bool(record.get("deleted")),
+                "checksum": record.get("checksum", ""),
+            }
+            for document_id, record in sorted(registry.get("documents", {}).items())
+        ]
+        encoded = json.dumps(policy_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
+
+    def filter_retrieved_documents_for_role(self, documents: List[Dict[str, Any]], role: str) -> List[Dict[str, Any]]:
+        if not documents:
+            return []
+
+        registry = self._load_registry()
+        records_by_source = {}
+        for record in registry.get("documents", {}).values():
+            storage_path = self._normalize_source_path(record.get("storage_path"))
+            if storage_path:
+                records_by_source[storage_path] = record
+            filename = Path(record.get("storage_name") or record.get("filename") or "").name
+            if filename:
+                records_by_source[filename] = record
+
+        filtered: List[Dict[str, Any]] = []
+        for document in documents:
+            source = (
+                document.get("source_file")
+                or document.get("metadata", {}).get("source_file")
+                or document.get("metadata", {}).get("file_path")
+            )
+            source_key = self._normalize_source_path(source)
+            filename_key = Path(str(source or "")).name
+            record = records_by_source.get(source_key) or records_by_source.get(filename_key)
+            if not record or not self.can_role_access(record, role):
+                continue
+
+            document_copy = dict(document)
+            metadata = dict(document_copy.get("metadata") or {})
+            metadata["access_policy"] = {
+                "document_id": record.get("document_id"),
+                "published": bool(record.get("published")),
+                "visible_to_frontend": bool(record.get("visible_to_frontend")),
+                "allowed_roles": self._normalize_roles(record.get("allowed_roles")),
+            }
+            document_copy["metadata"] = metadata
+            filtered.append(document_copy)
+
+        return filtered
+
     def list_frontend_documents(self, role: str) -> List[Dict[str, Any]]:
         return [
             document

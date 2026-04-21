@@ -12,11 +12,13 @@ import json
 import asyncio
 from typing import Any, Dict, List, Optional, Tuple
 
+from agents.agent_state_graph import AgentGraphState, NodeExecutionPolicy, StateGraphExecutor
 from core.logger import LoggerManager
 from core.session_context import SessionContext
 from core.agent_factory import agent_factory
 from skills.manager import SkillManager
 from skills.base import SkillResult
+from tools.rag.fallback_policy import plan_low_quality_rag_fallback
 
 logger = LoggerManager.get_logger("supervisor_agent")
 
@@ -91,6 +93,171 @@ class SupervisorAgent:
         return self._llm
 
     # ============ LLM 驱动的意图分类 ============
+
+    def _build_state_graph(self) -> StateGraphExecutor:
+        graph = StateGraphExecutor()
+        policy = NodeExecutionPolicy(timeout_seconds=30.0, retries=1, fallback=self._node_fallback)
+        graph.add_node("intent", self._graph_intent_node, policy)
+        graph.add_node("plan", self._graph_plan_node, policy)
+        graph.add_node("retrieve", self._graph_retrieve_node, policy)
+        graph.add_node("execute", self._graph_execute_node, policy)
+        graph.add_node("verify", self._graph_verify_node, policy)
+        graph.add_node("replan", self._graph_replan_node, policy)
+        graph.add_node("final", self._graph_final_node, policy)
+        return graph
+
+    async def _node_fallback(self, state: AgentGraphState, error: Exception) -> AgentGraphState:
+        state.metadata.setdefault("fallbacks", []).append(
+            {"node": "agent_graph", "error": type(error).__name__}
+        )
+        if not state.final_response:
+            state.final_response = {
+                "success": False,
+                "message": "抱歉，当前任务处理失败，请稍后重试。",
+                "intent": state.intent or "error",
+                "intent_confidence": state.confidence,
+                "evaluation_score": 0.0,
+            }
+        return state
+
+    async def _graph_intent_node(self, state: AgentGraphState) -> AgentGraphState:
+        intent, confidence = await self.classify_intent_llm(state.query, state.context.turn_history)
+        state.intent = intent
+        state.confidence = confidence
+        self._last_intent_confidence = confidence
+        return state
+
+    async def _graph_plan_node(self, state: AgentGraphState) -> AgentGraphState:
+        state.plan = {
+            "intent": state.intent,
+            "nodes": ["intent", "plan", "retrieve", "execute", "verify", "replan", "final"],
+        }
+        return state
+
+    async def _graph_retrieve_node(self, state: AgentGraphState) -> AgentGraphState:
+        if state.intent != "general":
+            state.retrieval_result = {
+                "success": True,
+                "documents": [],
+                "has_relevant_info": False,
+                "skipped": True,
+                "reason": "intent_does_not_require_prefetch",
+            }
+            state.metadata["retrieval"] = {
+                "source": "state_graph",
+                "document_count": 0,
+                "skipped": True,
+            }
+            return state
+
+        documents = await self._query_knowledge_base_async(state.query, state.context)
+        state.retrieval_result = {
+            "success": True,
+            "documents": documents,
+            "has_relevant_info": bool(documents),
+            "query": state.query,
+        }
+        state.rag_fallback = plan_low_quality_rag_fallback(
+            state.query,
+            state.retrieval_result,
+            quality="high" if documents else "none",
+        )
+        state.context.metadata["prefetched_rag_result"] = state.retrieval_result
+        if state.rag_fallback.get("needed"):
+            state.context.metadata["rag_fallback"] = state.rag_fallback
+            state.metadata["rag_fallback"] = state.rag_fallback
+        state.metadata["retrieval"] = {
+            "source": "state_graph",
+            "document_count": len(documents),
+            "has_relevant_info": bool(documents),
+        }
+        return state
+
+    async def _graph_execute_node(self, state: AgentGraphState) -> AgentGraphState:
+        state.routing_results = await self.route_task(state.intent or "general", state.query, state.context)
+        return state
+
+    async def _graph_verify_node(self, state: AgentGraphState) -> AgentGraphState:
+        business_success = any(
+            name != "customer_classifier" and result and result.success
+            for name, result in state.routing_results
+        )
+        state.needs_replan = bool(state.rag_fallback.get("needed")) or not business_success
+        state.metadata["verification"] = {
+            "needs_replan": state.needs_replan,
+            "result_count": len(state.routing_results),
+            "business_success": business_success,
+        }
+        return state
+
+    async def _graph_replan_node(self, state: AgentGraphState) -> AgentGraphState:
+        if state.needs_replan:
+            rewrite_query = state.rag_fallback.get("rewrite_query") if state.rag_fallback else None
+            if rewrite_query:
+                retry_documents = await self._query_knowledge_base_async(rewrite_query, state.context)
+                state.metadata["replanned"] = {
+                    "strategy": "rewrite_retry",
+                    "query": rewrite_query,
+                    "document_count": len(retry_documents),
+                }
+                if retry_documents:
+                    state.retrieval_result = {
+                        "success": True,
+                        "documents": retry_documents,
+                        "has_relevant_info": True,
+                        "query": rewrite_query,
+                        "source": "replan_rewrite",
+                    }
+                    state.context.metadata["prefetched_rag_result"] = state.retrieval_result
+                    rephrased_response = await self._format_rag_response(retry_documents, rewrite_query)
+                    state.routing_results = [
+                        (name, result)
+                        for name, result in state.routing_results
+                        if name == "customer_classifier"
+                    ]
+                    state.routing_results.append(
+                        (
+                            "general_replan",
+                            SkillResult(
+                                success=True,
+                                data={
+                                    "intent": "general",
+                                    "response": rephrased_response,
+                                    "sources": ["knowledge_base"],
+                                    "replan_query": rewrite_query,
+                                },
+                                message="rewrite retry succeeded",
+                                confidence=0.7,
+                            ),
+                        )
+                    )
+                    return state
+
+            state.routing_results = [
+                (
+                    "fallback",
+                    SkillResult(
+                        success=True,
+                        data={"message": "抱歉，当前信息不足，请补充更多细节后我再继续处理。"},
+                        message="fallback clarification",
+                        confidence=0.3,
+                    ),
+                )
+            ]
+            state.metadata["replanned"] = {
+                "strategy": "clarification",
+                "document_count": 0,
+            }
+        return state
+
+    async def _graph_final_node(self, state: AgentGraphState) -> AgentGraphState:
+        state.final_response = await self._integrate_results_async(
+            state.intent or "general",
+            state.routing_results,
+            state.context,
+            state.confidence,
+        )
+        return state
 
     async def classify_intent_llm(
         self,
@@ -436,7 +603,11 @@ class SupervisorAgent:
     ) -> Optional[SkillResult]:
         """异步通用查询处理"""
         try:
-            rag_results = await self._query_knowledge_base_async(query, context)
+            prefetched = context.metadata.get("prefetched_rag_result") if context else None
+            if isinstance(prefetched, dict) and prefetched.get("query") == query:
+                rag_results = prefetched.get("documents", [])
+            else:
+                rag_results = await self._query_knowledge_base_async(query, context)
             if rag_results:
                 rephrased_response = await self._format_rag_response(rag_results, query)
                 return SkillResult(
@@ -481,11 +652,26 @@ class SupervisorAgent:
                     enable_self_rag=True,
                     llm=self._get_llm(),
                     use_hybrid=True,
-                    chat_history=chat_history
+                    chat_history=chat_history,
+                    retrieval_policy=context.metadata.get("retrieval_policy") if context else None,
+                    trace_id=context.metadata.get("trace_id") if context else None,
                 )
             )
 
             if result.get("success") and result.get("documents"):
+                user_role = (context.metadata.get("retrieval_policy") or {}).get("user_role") if context else None
+                if user_role:
+                    try:
+                        from app.services.knowledge_admin_service import knowledge_admin_service
+
+                        result["documents"] = knowledge_admin_service.filter_retrieved_documents_for_role(
+                            result["documents"],
+                            role=user_role,
+                        )
+                    except Exception as filter_error:
+                        logger.warning(f"[SupervisorAgent] RAG权限过滤失败，已返回空结果: {filter_error}")
+                        result["documents"] = []
+
                 seen_contents = set()
                 unique_docs = []
                 for doc in result["documents"]:
@@ -558,7 +744,8 @@ class SupervisorAgent:
     async def process(
         self,
         query: str,
-        context: SessionContext
+        context: SessionContext,
+        trace_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         处理用户查询（异步主流程）
@@ -571,27 +758,33 @@ class SupervisorAgent:
             处理结果
         """
         logger.info(f"[SupervisorAgent] 处理查询: {query[:50]}...")
+        if trace_id:
+            context.metadata["trace_id"] = trace_id
 
-        # 1. LLM 意图识别（带规则兜底）
-        intent, confidence = await self.classify_intent_llm(query, context.turn_history)
-        self._last_intent_confidence = confidence  # 保存置信度，供响应整合使用
-
-        # 2. 异步任务路由
-        routing_results = await self.route_task(intent, query, context)
-
-        # 3. 结果整合
-        final_response = await self._integrate_results_async(intent, routing_results, context, confidence)
+        graph = self._build_state_graph()
+        graph_state = await graph.run(
+            AgentGraphState(query=query, context=context, trace_id=trace_id)
+        )
+        final_response = graph_state.final_response
+        final_response["agent_graph"] = {
+            "definition": graph.definition(),
+            "node_status": graph_state.node_status,
+            "plan": graph_state.plan,
+            "metadata": graph_state.metadata,
+        }
 
         # 4. 记录对话
         context.add_turn(
             role="user",
             content=query,
             agent_name="supervisor",
-            intent=intent,
+            intent=graph_state.intent,
             rag_results=None,
-            evaluation_score=final_response.get("evaluation_score", 0.0)
+            evaluation_score=final_response.get("evaluation_score", 0.0),
+            trace_id=trace_id,
         )
 
+        final_response["trace_id"] = trace_id or context.metadata.get("trace_id")
         return final_response
 
     async def _integrate_results_async(

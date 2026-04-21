@@ -33,6 +33,7 @@ class TurnRecord:
 
     role: str  # user / assistant
     content: str
+    trace_id: Optional[str] = None
     agent_name: Optional[str] = None
     intent: Optional[str] = None
     rag_results: Optional[List[Dict]] = None
@@ -166,6 +167,7 @@ class SessionContext:
                     TurnRecord(
                         role=item.get("role", "assistant"),
                         content=item.get("content", ""),
+                        trace_id=item.get("trace_id"),
                         agent_name=item.get("agent_name"),
                         intent=item.get("intent"),
                         rag_results=item.get("rag_results") or [],
@@ -421,12 +423,15 @@ class SessionContext:
         rag_results: List[Dict] = None,
         evaluation_score: float = 0.0,
         metadata: Dict[str, Any] = None,
+        trace_id: Optional[str] = None,
     ) -> None:
         """Add one turn and update all context layers."""
         with self._lock:
+            active_trace_id = trace_id or (metadata or {}).get("trace_id") or self.metadata.get("trace_id")
             turn = TurnRecord(
                 role=role,
                 content=content,
+                trace_id=active_trace_id,
                 agent_name=agent_name,
                 intent=intent,
                 rag_results=rag_results,
@@ -434,6 +439,8 @@ class SessionContext:
                 metadata=metadata or {},
             )
             self.turn_history.append(turn)
+            if active_trace_id:
+                self.metadata["trace_id"] = active_trace_id
 
             if role == "user":
                 self.memory.chat_memory.add_user_message(content)
@@ -572,6 +579,7 @@ class SessionContext:
             three_tier_context = self.get_three_tier_context()
             return {
                 "session_id": self.session_id,
+                "trace_id": self.metadata.get("trace_id"),
                 "user_id": self.user_id,
                 "memory": self.memory.load_memory_variables({}),
                 "skill_context": dict(self.skill_context),
@@ -597,6 +605,7 @@ class SessionContext:
                 "current_product": self.metadata.get("current_product"),
                 "preference": self.metadata.get("preference"),
                 "discount_level": self.metadata.get("discount_level", 1),
+                "trace_id": self.metadata.get("trace_id"),
                 "three_tier_context": three_tier_context,
                 "medium_term_summary": three_tier_context.get("medium_term_summary", ""),
                 "long_term_context": three_tier_context.get("long_term_text", ""),
@@ -641,6 +650,7 @@ class SessionContext:
 
             return {
                 "session_id": self.session_id,
+                "trace_id": self.metadata.get("trace_id"),
                 "user_id": self.user_id,
                 "created_at": self.created_at.isoformat(),
                 "duration_seconds": (datetime.now() - self.created_at).total_seconds(),

@@ -42,6 +42,7 @@ from core.logger import LoggerManager
 from tools.rag.query_understanding import QueryUnderstandingLayer
 from tools.rag.generation_context import GenerationContextLayer
 from tools.rag.bm25_ranker import ProfessionalBM25
+from tools.rag.cache_policy import build_retrieval_cache_key, normalize_retrieval_policy
 from tools.rag.redis_cache_manager import get_cache_manager, RetrievalCache
 
 app_logger = LoggerManager.get_logger("rag_tool")
@@ -232,12 +233,28 @@ class LocalCache:
         self.default_ttl = default_ttl
         self.access_order: List[str] = []
 
-    def _generate_key(self, query: str, top_k: int, enable_self_rag: bool) -> str:
-        content = f"{query}:{top_k}:{enable_self_rag}"
-        return hashlib.md5(content.encode('utf-8')).hexdigest()
+    def _generate_key(
+        self,
+        query: str,
+        top_k: int,
+        enable_self_rag: bool,
+        retrieval_policy: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        return build_retrieval_cache_key(
+            query,
+            top_k,
+            enable_self_rag,
+            retrieval_policy=retrieval_policy,
+        )
 
-    def get(self, query: str, top_k: int, enable_self_rag: bool) -> Optional[Dict[str, Any]]:
-        key = self._generate_key(query, top_k, enable_self_rag)
+    def get(
+        self,
+        query: str,
+        top_k: int,
+        enable_self_rag: bool,
+        retrieval_policy: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        key = self._generate_key(query, top_k, enable_self_rag, retrieval_policy)
 
         with self._lock:
             if key not in self.cache:
@@ -251,12 +268,20 @@ class LocalCache:
             self._update_access_order_unlocked(key)
             return entry['result']
 
-    def set(self, query: str, top_k: int, enable_self_rag: bool, result: Dict[str, Any], ttl: Optional[int] = None):
+    def set(
+        self,
+        query: str,
+        top_k: int,
+        enable_self_rag: bool,
+        result: Dict[str, Any],
+        ttl: Optional[int] = None,
+        retrieval_policy: Optional[Dict[str, Any]] = None,
+    ):
         with self._lock:
             if len(self.cache) >= self.max_size:
                 self._evict_lru_unlocked()
 
-            key = self._generate_key(query, top_k, enable_self_rag)
+            key = self._generate_key(query, top_k, enable_self_rag, retrieval_policy)
             ttl = ttl or self.default_ttl
 
             self.cache[key] = {
@@ -348,17 +373,33 @@ class RedisCache:
         else:
             return str(obj)
 
-    def _generate_key(self, query: str, top_k: int, enable_self_rag: bool) -> str:
-        content = f"{query}:{top_k}:{enable_self_rag}"
-        key_hash = hashlib.md5(content.encode('utf-8')).hexdigest()
+    def _generate_key(
+        self,
+        query: str,
+        top_k: int,
+        enable_self_rag: bool,
+        retrieval_policy: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        key_hash = build_retrieval_cache_key(
+            query,
+            top_k,
+            enable_self_rag,
+            retrieval_policy=retrieval_policy,
+        )
         return f"{self.key_prefix}{key_hash}"
 
-    def get(self, query: str, top_k: int, enable_self_rag: bool) -> Optional[Dict[str, Any]]:
+    def get(
+        self,
+        query: str,
+        top_k: int,
+        enable_self_rag: bool,
+        retrieval_policy: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
         if not self._available or not self._redis:
             return None
 
         try:
-            key = self._generate_key(query, top_k, enable_self_rag)
+            key = self._generate_key(query, top_k, enable_self_rag, retrieval_policy)
             data = self._redis.get(key)
             if data:
                 # 使用JSON反序列化替代pickle
@@ -370,7 +411,7 @@ class RedisCache:
             app_logger.warning(f"Redis数据格式错误（已删除）: {e}")
             # 删除损坏的数据
             try:
-                self._redis.delete(self._generate_key(query, top_k, enable_self_rag))
+                self._redis.delete(self._generate_key(query, top_k, enable_self_rag, retrieval_policy))
             except:
                 pass
             return None
@@ -379,12 +420,13 @@ class RedisCache:
             return None
 
     def set(self, query: str, top_k: int, enable_self_rag: bool,
-            result: Dict[str, Any], ttl: Optional[int] = None):
+            result: Dict[str, Any], ttl: Optional[int] = None,
+            retrieval_policy: Optional[Dict[str, Any]] = None):
         if not self._available or not self._redis:
             return
 
         try:
-            key = self._generate_key(query, top_k, enable_self_rag)
+            key = self._generate_key(query, top_k, enable_self_rag, retrieval_policy)
             ttl = ttl or self.default_ttl
             # 使用JSON序列化替代pickle
             json_safe = self._json_safe_serialize(result)
@@ -980,9 +1022,19 @@ class RAGTool:
             self._retrieval_layer = RetrievalLayer(self)
         return self._retrieval_layer
 
-    def _get_cache_key(self, query: str, top_k: int, enable_self_rag: bool) -> str:
-        content = f"{query}:{top_k}:{enable_self_rag}"
-        return hashlib.md5(content.encode('utf-8')).hexdigest()
+    def _get_cache_key(
+        self,
+        query: str,
+        top_k: int,
+        enable_self_rag: bool,
+        retrieval_policy: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        return build_retrieval_cache_key(
+            query,
+            top_k,
+            enable_self_rag,
+            retrieval_policy=retrieval_policy,
+        )
 
     def _detect_content_type(self, file_path: str) -> str:
         """
@@ -2212,7 +2264,9 @@ class RAGTool:
 
     def retrieve(self, query: str, top_k: int = 3, enable_self_rag: bool = True, llm=None,
                  use_cache: bool = True, use_hybrid: bool = True, use_rerank: bool = False,
-                 chat_history: List[Dict[str, str]] = None) -> Dict[str, Any]:
+                 chat_history: List[Dict[str, str]] = None,
+                 retrieval_policy: Optional[Dict[str, Any]] = None,
+                 trace_id: Optional[str] = None) -> Dict[str, Any]:
         """执行向量检索（带输入验证）"""
         # ========== 输入验证 ==========
         if not query or not isinstance(query, str):
@@ -2247,6 +2301,13 @@ class RAGTool:
 
         start_time = time.time()
         chat_history = chat_history or []
+        effective_retrieval_policy = normalize_retrieval_policy(
+            {
+                **(retrieval_policy or {}),
+                "enable_hybrid": use_hybrid,
+                "enable_rerank": use_rerank,
+            }
+        )
         
         # 调试日志：检查查询增强条件
         app_logger.info(f"[retrieve] Query: '{query}', chat_history: {len(chat_history)}, llm: {llm is not None}")
@@ -2266,11 +2327,19 @@ class RAGTool:
             if llm is None:
                 app_logger.info(f"[retrieve] SKIP: llm is None")
 
-        cache_key = self._get_cache_key(contextualized_query, top_k, enable_self_rag)
         if use_cache:
-            cached_result = self.cache.get(contextualized_query, top_k, enable_self_rag)
+            cached_result = self.cache.get(
+                contextualized_query,
+                top_k,
+                enable_self_rag,
+                retrieval_policy=effective_retrieval_policy,
+            )
             if cached_result:
                 self.metrics.record_cache_hit()
+                cached_result = dict(cached_result)
+                cached_result["cache_hit"] = True
+                if trace_id:
+                    cached_result["trace_id"] = trace_id
                 return cached_result
             self.metrics.record_cache_miss()
 
@@ -2313,7 +2382,9 @@ class RAGTool:
                     "need_retrieval": False,
                     "reason": decision["reason"],
                     "documents": [],
-                    "decision_info": decision_info
+                    "decision_info": decision_info,
+                    "trace_id": trace_id,
+                    "retrieval_policy": effective_retrieval_policy,
                 }
                 self.metrics.record_request(True, time.time() - start_time)
                 self.metrics.record_self_rag_decision("no_retrieval")
@@ -2475,10 +2546,21 @@ class RAGTool:
                 "contextualized_query": contextualized_query,
                 "retrieved_count": len(formatted_docs),
                 "rerank_applied": rerank_applied,
-                "hybrid_applied": hybrid_applied  # 标记是否使用混合检索
+                "hybrid_applied": hybrid_applied,  # 标记是否使用混合检索
+                "trace_id": trace_id,
+                "retrieval_policy": effective_retrieval_policy,
+                "cache_hit": False,
             }
 
             self.metrics.record_request(True, retrieval_time)
+            if use_cache:
+                self.cache.set(
+                    contextualized_query,
+                    top_k,
+                    enable_self_rag,
+                    result,
+                    retrieval_policy=effective_retrieval_policy,
+                )
             app_logger.info(f"检索完成，返回{len(formatted_docs)}条文档，耗时{retrieval_time:.3f}s")
             
             # 记录检索到的具体文档信息
@@ -2499,7 +2581,9 @@ class RAGTool:
                 "success": False,
                 "error": str(e),
                 "documents": [],
-                "decision_info": decision_info
+                "decision_info": decision_info,
+                "trace_id": trace_id,
+                "retrieval_policy": effective_retrieval_policy,
             }
 
     async def async_load_document(self, file_path: str, metadata: Optional[Dict[str, Any]] = None) -> List[Document]:
