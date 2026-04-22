@@ -83,6 +83,29 @@ def test_chroma_backend_search_passes_embedding_and_filter_to_collection():
     assert results[0].id == "doc-1"
 
 
+def test_chroma_backend_search_wraps_multi_field_filter_with_and_operator():
+    collection = FakeCollection()
+    backend = ChromaVectorStoreBackend(collection=collection, embeddings=FakeEmbeddings())
+
+    backend.search(
+        VectorSearchRequest(
+            query="hello",
+            top_k=2,
+            metadata_filter={
+                "access_managed": True,
+                "access_role_user": True,
+            },
+        )
+    )
+
+    assert collection.calls[0]["where"] == {
+        "$and": [
+            {"access_managed": True},
+            {"access_role_user": True},
+        ]
+    }
+
+
 def test_chroma_backend_search_returns_empty_when_unavailable():
     backend = ChromaVectorStoreBackend(
         collection=None,
@@ -247,6 +270,8 @@ def test_vector_and_bm25_filters_exclude_role_inaccessible_documents():
         item for item in bm25_candidates if metadata_matches_filter(item["metadata"], user_filter)
     ]
 
-    assert collection.calls[0]["where"] == user_filter
+    assert collection.calls[0]["where"] == {
+        "$and": [{key: value} for key, value in user_filter.items()]
+    }
     assert [result.content for result in vector_results] == ["public doc"]
     assert [item["content"] for item in bm25_results] == ["public doc"]

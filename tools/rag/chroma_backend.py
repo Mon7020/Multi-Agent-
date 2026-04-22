@@ -46,7 +46,7 @@ class ChromaVectorStoreBackend:
                 "include": request.include,
             }
             if request.metadata_filter:
-                query_kwargs["where"] = request.metadata_filter
+                query_kwargs["where"] = self._build_where_filter(request.metadata_filter)
 
             raw_results = self.collection.query(**query_kwargs)
         except Exception:
@@ -84,3 +84,9 @@ class ChromaVectorStoreBackend:
         if isinstance(value, list):
             return value
         return []
+
+    @staticmethod
+    def _build_where_filter(metadata_filter: Dict[str, Any]) -> Dict[str, Any]:
+        if len(metadata_filter) <= 1:
+            return dict(metadata_filter)
+        return {"$and": [{key: value} for key, value in metadata_filter.items()]}
