@@ -12,9 +12,9 @@ def get_rag_tool():
     """Return singleton RAG tool instance."""
     global _rag_tool_instance
     if _rag_tool_instance is None:
-        from tools.rag_tool import RAGTool
+        from tools.rag_tool import rag_tool
 
-        _rag_tool_instance = RAGTool()
+        _rag_tool_instance = rag_tool
     return _rag_tool_instance
 
 

@@ -19,6 +19,7 @@ ALLOWED_DOC_EXTENSIONS = {".txt", ".pdf", ".docx", ".html", ".htm", ".xlsx"}
 REGISTRY_VERSION = 2
 
 _chromadb_module = None
+_chromadb_settings_cls = None
 
 
 def _get_chromadb_module():
@@ -26,6 +27,13 @@ def _get_chromadb_module():
     if _chromadb_module is None:
         _chromadb_module = import_module("chromadb")
     return _chromadb_module
+
+
+def _get_chromadb_settings_cls():
+    global _chromadb_settings_cls
+    if _chromadb_settings_cls is None:
+        _chromadb_settings_cls = import_module("chromadb.config").Settings
+    return _chromadb_settings_cls
 
 
 class KnowledgeConflictError(ValueError):
@@ -154,7 +162,11 @@ class KnowledgeAdminService:
 
         try:
             chromadb_module = _get_chromadb_module()
-            client = chromadb_module.PersistentClient(path=str(self._project_root() / "chroma_data"))
+            settings_cls = _get_chromadb_settings_cls()
+            client = chromadb_module.PersistentClient(
+                path=str(self._project_root() / "chroma_data"),
+                settings=settings_cls(anonymized_telemetry=False),
+            )
             return client.get_collection(settings.vector_db.vector_db_collection_name)
         except Exception:
             return None

@@ -212,12 +212,70 @@ class KnowledgeAdminRegistryTest(unittest.TestCase):
             ):
                 with patch(
                     "app.services.knowledge_admin_service._get_chromadb_module",
-                    return_value=SimpleNamespace(PersistentClient=lambda path: client),
+                    return_value=SimpleNamespace(PersistentClient=lambda path, settings=None: client),
                 ):
                     documents = knowledge_admin_service.list_documents()
 
         self.assertEqual(len(documents), 1)
         self.assertEqual(documents[0]["chunk_count"], 3)
+
+    def test_persistent_vector_store_fallback_uses_rag_chroma_settings(self):
+        alpha_path = self.docs_dir / "alpha.txt"
+        alpha_path.write_text("alpha content", encoding="utf-8")
+        self.metadata_path.write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "documents": {
+                        "doc_alpha": {
+                            "document_id": "doc_alpha",
+                            "current_version_id": None,
+                            "filename": "alpha.txt",
+                            "file_type": ".txt",
+                            "storage_name": "alpha.txt",
+                            "storage_path": str(alpha_path.resolve()),
+                            "size": alpha_path.stat().st_size,
+                            "checksum": "checksum-alpha",
+                            "chunk_count": 0,
+                            "description": "",
+                            "tags": [],
+                            "published": True,
+                            "visible_to_frontend": True,
+                            "allowed_roles": ["user", "operator", "admin", "super_admin"],
+                            "deleted": False,
+                            "created_at": "2026-04-15T10:00:00",
+                            "created_by": "admin-1",
+                            "updated_at": "2026-04-15T10:00:00",
+                            "updated_by": "admin-1",
+                            "deleted_at": None,
+                            "deleted_by": None,
+                        }
+                    },
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        captured = {}
+        client = FakePersistentClient([{"source_file": str(alpha_path.resolve())}])
+
+        def persistent_client(path, settings=None):
+            captured["path"] = path
+            captured["settings"] = settings
+            return client
+
+        with patch("app.services.knowledge_admin_service.get_loaded_rag_tool", return_value=None, create=True):
+            with patch(
+                "app.services.knowledge_admin_service._get_chromadb_module",
+                return_value=SimpleNamespace(PersistentClient=persistent_client),
+            ):
+                documents = knowledge_admin_service.list_documents()
+
+        self.assertEqual(len(documents), 1)
+        self.assertIsNotNone(captured.get("settings"))
+        self.assertEqual(captured["settings"].anonymized_telemetry, False)
 
     def test_vector_access_metadata_for_source_uses_registry_record(self):
         alpha_path = self.docs_dir / "alpha.txt"
