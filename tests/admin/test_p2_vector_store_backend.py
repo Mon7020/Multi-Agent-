@@ -97,6 +97,7 @@ def test_build_vector_metadata_filter_uses_non_default_tenant_and_safe_overrides
     metadata_filter = build_vector_metadata_filter(
         {
             "tenant_id": "tenant-a",
+            "user_role": "user",
             "vector_metadata_filter": {
                 "department": "support",
                 "visible_to_frontend": True,
@@ -108,6 +109,11 @@ def test_build_vector_metadata_filter_uses_non_default_tenant_and_safe_overrides
 
     assert metadata_filter == {
         "tenant_id": "tenant-a",
+        "access_managed": True,
+        "access_published": True,
+        "access_visible_to_frontend": True,
+        "access_deleted": False,
+        "access_role_user": True,
         "department": "support",
         "visible_to_frontend": True,
     }
@@ -115,6 +121,20 @@ def test_build_vector_metadata_filter_uses_non_default_tenant_and_safe_overrides
 
 def test_build_vector_metadata_filter_ignores_default_tenant():
     assert build_vector_metadata_filter({"tenant_id": "default"}) is None
+
+
+def test_build_vector_metadata_filter_adds_operator_role_acl_filters():
+    assert build_vector_metadata_filter({"user_role": "operator"}) == {
+        "access_managed": True,
+        "access_published": True,
+        "access_visible_to_frontend": True,
+        "access_deleted": False,
+        "access_role_operator": True,
+    }
+
+
+def test_build_vector_metadata_filter_ignores_unknown_roles():
+    assert build_vector_metadata_filter({"user_role": "guest"}) is None
 
 
 def test_metadata_matches_filter_supports_hybrid_bm25_fallback_filtering():

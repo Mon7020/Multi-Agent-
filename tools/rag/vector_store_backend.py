@@ -52,6 +52,18 @@ def build_vector_metadata_filter(retrieval_policy: Optional[Dict[str, Any]]) -> 
     if tenant_id and tenant_id != "default":
         metadata_filter["tenant_id"] = tenant_id
 
+    user_role = str(retrieval_policy.get("user_role") or "").strip()
+    if user_role in ACCESS_ROLES:
+        metadata_filter.update(
+            {
+                "access_managed": True,
+                "access_published": True,
+                "access_visible_to_frontend": True,
+                "access_deleted": False,
+                f"access_role_{user_role}": True,
+            }
+        )
+
     explicit_filter = retrieval_policy.get("vector_metadata_filter")
     if isinstance(explicit_filter, dict):
         for key, value in explicit_filter.items():
