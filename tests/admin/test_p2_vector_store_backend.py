@@ -190,3 +190,63 @@ def test_build_vector_access_metadata_denies_unmanaged_sources():
     assert access_metadata["access_role_operator"] is False
     assert access_metadata["access_role_admin"] is False
     assert access_metadata["access_role_super_admin"] is False
+
+
+def test_vector_and_bm25_filters_exclude_role_inaccessible_documents():
+    user_filter = build_vector_metadata_filter({"user_role": "user"})
+    collection = FakeCollection(
+        results={
+            "documents": [["public doc"]],
+            "metadatas": [[
+                {
+                    "access_managed": True,
+                    "access_published": True,
+                    "access_visible_to_frontend": True,
+                    "access_deleted": False,
+                    "access_role_user": True,
+                }
+            ]],
+            "distances": [[0.1]],
+            "ids": [["public-1"]],
+        }
+    )
+    backend = ChromaVectorStoreBackend(collection=collection, embeddings=FakeEmbeddings())
+
+    vector_results = backend.search(
+        VectorSearchRequest(
+            query="policy",
+            top_k=5,
+            metadata_filter=user_filter,
+        )
+    )
+    bm25_candidates = [
+        {
+            "content": "public doc",
+            "metadata": {
+                "access_managed": True,
+                "access_published": True,
+                "access_visible_to_frontend": True,
+                "access_deleted": False,
+                "access_role_user": True,
+            },
+        },
+        {
+            "content": "operator doc",
+            "metadata": {
+                "access_managed": True,
+                "access_published": True,
+                "access_visible_to_frontend": True,
+                "access_deleted": False,
+                "access_role_user": False,
+                "access_role_operator": True,
+            },
+        },
+    ]
+
+    bm25_results = [
+        item for item in bm25_candidates if metadata_matches_filter(item["metadata"], user_filter)
+    ]
+
+    assert collection.calls[0]["where"] == user_filter
+    assert [result.content for result in vector_results] == ["public doc"]
+    assert [item["content"] for item in bm25_results] == ["public doc"]
