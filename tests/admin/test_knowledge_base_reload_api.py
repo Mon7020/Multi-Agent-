@@ -95,6 +95,8 @@ class KnowledgeBaseReloadApiTest(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["verified_chunks"], 4)
+        self.assertEqual(response.json()["access_metadata_rebuilt"], True)
+        self.assertIn("access_policy_version", response.json())
         self.assertEqual(sorted(self.rag_tool.loaded_sources), ["alpha.txt", "guide.html", "table.xlsx"])
 
 

@@ -508,6 +508,8 @@ async def reload_knowledge_base(current_user=Depends(require_admin_user("admin",
             "message": "knowledge base reloaded",
             "total_chunks": total_chunks,
             "verified_chunks": verified_chunks,
+            "access_metadata_rebuilt": True,
+            "access_policy_version": knowledge_admin_service.get_access_policy_version(),
             "params_used": {"chunk_size": chunk_size, "chunk_overlap": chunk_overlap},
         }
     except Exception as exc:
