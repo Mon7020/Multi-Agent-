@@ -11,6 +11,7 @@ from uuid import uuid4
 from config.settings import settings
 from app.services.audit_log_service import AuditLogService
 from app.services.rag_runtime import get_loaded_rag_tool, get_rag_tool, rag_params_manager
+from tools.rag.chroma_telemetry import disable_chroma_telemetry
 from tools.rag.vector_store_backend import build_vector_access_metadata
 
 
@@ -161,6 +162,7 @@ class KnowledgeAdminService:
             return collection
 
         try:
+            disable_chroma_telemetry()
             chromadb_module = _get_chromadb_module()
             settings_cls = _get_chromadb_settings_cls()
             client = chromadb_module.PersistentClient(

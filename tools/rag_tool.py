@@ -44,6 +44,7 @@ from tools.rag.generation_context import GenerationContextLayer
 from tools.rag.bm25_ranker import ProfessionalBM25
 from tools.rag.cache_policy import build_retrieval_cache_key, normalize_retrieval_policy
 from tools.rag.chroma_backend import ChromaVectorStoreBackend
+from tools.rag.chroma_telemetry import disable_chroma_telemetry
 from tools.rag.redis_cache_manager import get_cache_manager, RetrievalCache
 from tools.rag.vector_store_backend import (
     VectorSearchRequest,
@@ -926,6 +927,7 @@ class RAGTool:
         self._refresh_interval = settings.rag.crag_refresh_interval  # 刷新间隔(秒)
 
         try:
+            disable_chroma_telemetry()
             project_root = os.path.dirname(os.path.dirname(__file__))
             chroma_data_path = os.path.join(project_root, 'chroma_data')
             os.makedirs(chroma_data_path, exist_ok=True)

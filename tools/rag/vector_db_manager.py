@@ -11,6 +11,7 @@ import chromadb
 from chromadb.config import Settings as ChromaSettings
 from langchain_core.documents import Document
 from config.settings import settings
+from tools.rag.chroma_telemetry import disable_chroma_telemetry
 
 
 class LocalEmbeddings:
@@ -56,6 +57,7 @@ class VectorDBManager:
             chroma_data_path = os.path.join(project_root, 'chroma_data')
             os.makedirs(chroma_data_path, exist_ok=True)
 
+            disable_chroma_telemetry()
             self.chroma_client = chromadb.PersistentClient(
                 path=chroma_data_path,
                 settings=ChromaSettings(anonymized_telemetry=False)
