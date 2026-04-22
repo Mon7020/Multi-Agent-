@@ -3,10 +3,33 @@
 使用loguru提供结构化日志记录，支持多种输出格式和级别
 """
 
+import io
 import sys
 import os
 from typing import Optional
 from loguru import logger
+
+
+def _safe_console_stream(stream):
+    """Return a console stream that will not raise on unsupported characters."""
+    if hasattr(stream, "reconfigure"):
+        try:
+            stream.reconfigure(errors="replace")
+            return stream
+        except Exception:
+            pass
+
+    buffer = getattr(stream, "buffer", None)
+    if buffer is None:
+        return stream
+
+    encoding = getattr(stream, "encoding", None) or "utf-8"
+    return io.TextIOWrapper(
+        buffer,
+        encoding=encoding,
+        errors="replace",
+        line_buffering=True,
+    )
 
 
 class LoggerManager:
@@ -50,7 +73,7 @@ class LoggerManager:
         
         # 控制台输出配置
         logger.add(
-            sys.stdout,
+            _safe_console_stream(sys.stdout),
             format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
                    "<level>{level: <8}</level> | "
                    "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | "
