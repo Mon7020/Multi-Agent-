@@ -26,28 +26,35 @@ class ChatServiceV3:
 
     _instance = None
 
-    def __new__(cls):
+    def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._initialized = False
         return cls._instance
 
-    def __init__(self):
+    def __init__(
+        self,
+        session_manager: Optional[SessionContextManager] = None,
+        supervisor: Optional[SupervisorAgent] = None,
+        fusion_layer: Optional[Any] = None,
+        llm: Optional[ChatOpenAI] = None,
+        rag_tool_instance: Optional[Any] = None,
+    ):
         if self._initialized:
             return
 
         self._initialized = True
-        self.session_manager = SessionContextManager()
-        self.supervisor = SupervisorAgent()
-
-        self.rag_tool = None
+        self.session_manager = session_manager or SessionContextManager()
+        self.supervisor = supervisor or SupervisorAgent()
+        self.rag_tool = rag_tool_instance
         self._docs_loaded = False
         self._docs_load_lock = threading.Lock()
-        self._init_rag_tool()
+        if self.rag_tool is None:
+            self._init_rag_tool()
 
-        self.fusion_layer = context_rag_fusion_layer
+        self.fusion_layer = fusion_layer or context_rag_fusion_layer
 
-        self.llm = ChatOpenAI(
+        self.llm = llm or ChatOpenAI(
             api_key=settings.deepseek_api_key or os.getenv("DEEPSEEK_API_KEY", ""),
             base_url=settings.deepseek_base_url,
             model=settings.deepseek_model,
@@ -182,6 +189,16 @@ class ChatServiceV3:
                 context.metadata["rag_fallback"] = rag_fallback
                 rag_result["fallback_decision"] = rag_fallback
 
+            # Store RAG results in context so state graph can reuse them
+            # instead of performing a duplicate retrieval.
+            context.metadata["prefetched_rag_result"] = {
+                "success": True,
+                "documents": rag_result.get("documents", []),
+                "has_relevant_info": rag_result.get("has_relevant_info", False),
+                "query": message,
+                "source": "chat_service_v3",
+            }
+
             if rag_result.get("documents"):
                 context.update_rag_cache(message, rag_result["documents"])
                 context.update_skill_context(
@@ -274,29 +291,127 @@ class ChatServiceV3:
         chunk_size: int = 40,
         user_id: Optional[str] = None,
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        result = await self.process_message(
+        # Delegate to the true streaming implementation.
+        async for event in self._stream_process_message_real(
             session_id=session_id,
             message=message,
             history=history,
             user_id=user_id,
-        )
+        ):
+            yield event
 
-        full_message = result.get("message", "") or ""
-        step = max(1, chunk_size)
-        for i in range(0, len(full_message), step):
-            yield {"content": full_message[i : i + step], "done": False}
+    async def _stream_process_message_real(
+        self,
+        session_id: str,
+        message: str,
+        history: List[Dict[str, str]] = None,
+        user_id: Optional[str] = None,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """真正的流式处理：Supervisor 逐步产出 token，TTFB 大幅降低。"""
+        try:
+            self._validate_session_access(None, user_id or "")
+            trace_id = f"trace_{uuid4().hex}"
+            await self._ensure_documents_loaded_async()
 
-        yield {
-            "content": "",
-            "done": True,
-            "meta": {
-                "intent": result.get("intent"),
-                "customer_type": result.get("customer_type"),
-                "greeting": result.get("greeting"),
-                "skills_used": result.get("skills_used", []),
-                "trace_id": result.get("trace_id"),
-            },
-        }
+            context = self.session_manager.get_session(session_id, user_id=user_id)
+            self._validate_session_access(context, user_id or "")
+
+            is_new_session = False
+            if context is None:
+                context = self.session_manager.create_session(session_id=session_id, user_id=user_id)
+                is_new_session = True
+            context.metadata["trace_id"] = trace_id
+            user_role = self._get_user_role(user_id or "")
+            retrieval_policy = self._build_retrieval_policy(user_role=user_role)
+            context.metadata["retrieval_policy"] = retrieval_policy
+
+            if history:
+                self._sync_history_to_context(context, history, message)
+
+            # Pre-fetch RAG results (fast, runs in thread pool).
+            rag_result = await self._retrieve_with_rag(
+                message, context, retrieval_policy, trace_id
+            )
+            context.metadata["prefetched_rag_result"] = {
+                "success": True,
+                "documents": rag_result.get("documents", []),
+                "has_relevant_info": rag_result.get("has_relevant_info", False),
+                "query": message,
+                "source": "chat_service_v3_stream",
+            }
+            if rag_result.get("documents"):
+                context.update_rag_cache(message, rag_result["documents"])
+                context.update_skill_context(
+                    "rag",
+                    {
+                        "documents": rag_result["documents"],
+                        "has_relevant_info": rag_result.get("has_relevant_info", False),
+                        "query": message,
+                    },
+                )
+
+            # Greeting for new sessions.
+            if is_new_session:
+                yield {
+                    "content": "",
+                    "done": False,
+                    "meta": {"greeting": self.greeting_message},
+                }
+
+            # Stream events from supervisor.
+            full_message = ""
+            async for event in self.supervisor.process_stream(
+                message, context, trace_id=trace_id
+            ):
+                if event["type"] == "token":
+                    full_message += event["content"]
+                    yield {"content": event["content"], "done": False}
+                elif event["type"] == "intent":
+                    yield {
+                        "content": "",
+                        "done": False,
+                        "meta": {
+                            "intent": event["intent"],
+                            "confidence": event["confidence"],
+                        },
+                    }
+                # "retrieved" and "done" are handled internally.
+
+            # Persist long-term memory in background.
+            try:
+                context.persist_long_term_memory()
+            except Exception as persist_error:
+                print(f"[WARN] failed to persist long-term memory: {persist_error}")
+
+            yield {
+                "content": "",
+                "done": True,
+                "meta": {
+                    "intent": context.metadata.get("intent"),
+                    "customer_type": context.metadata.get("customer_type"),
+                    "greeting": self.greeting_message if is_new_session else None,
+                    "skills_used": list(
+                        {
+                            t.agent_name
+                            for t in context.turn_history
+                            if t.agent_name and t.agent_name != "history_sync"
+                        }
+                    ),
+                    "trace_id": trace_id,
+                },
+            }
+
+        except (PermissionError, ValueError):
+            raise
+        except Exception as e:
+            import traceback
+            print(f"[ERR] _stream_process_message_real failed: {e}")
+            traceback.print_exc()
+            yield {
+                "content": f"抱歉，处理请求失败: {str(e)}",
+                "done": True,
+                "meta": {"error": str(e)},
+            }
 
     def _get_user_role(self, user_id: str) -> str:
         try:

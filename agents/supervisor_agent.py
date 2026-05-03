@@ -10,17 +10,21 @@ Supervisor Agent
 
 import json
 import asyncio
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from agents.agent_state_graph import AgentGraphState, NodeExecutionPolicy, StateGraphExecutor
 from core.logger import LoggerManager
 from core.session_context import SessionContext
 from core.agent_factory import agent_factory
+from core.rate_limiter import LLMRateLimiter
 from skills.manager import SkillManager
 from skills.base import SkillResult
 from tools.rag.fallback_policy import plan_low_quality_rag_fallback
 
 logger = LoggerManager.get_logger("supervisor_agent")
+
+# 全局限流器
+_llm_rate_limiter = LLMRateLimiter(max_concurrent=5, requests_per_minute=30)
 
 
 # Prompt 模板
@@ -80,10 +84,15 @@ class SupervisorAgent:
     3. 结果整合（Result Integration）
     """
 
-    def __init__(self):
-        self.skill_manager = SkillManager()
-        self.agent_factory = agent_factory
-        self._llm = None
+    def __init__(
+        self,
+        skill_manager: Optional[SkillManager] = None,
+        agent_factory_instance: Optional[Any] = None,
+        llm: Optional[Any] = None,
+    ):
+        self.skill_manager = skill_manager or SkillManager()
+        self.agent_factory = agent_factory_instance or agent_factory
+        self._llm = llm
         logger.info("[SupervisorAgent] 初始化完成")
 
     def _get_llm(self):
@@ -92,18 +101,27 @@ class SupervisorAgent:
             self._llm = agent_factory.get_llm()
         return self._llm
 
+    def _get_streaming_llm(self):
+        """获取 LLM 实例（与 _get_llm 相同实例，streaming=True 兼容 ainvoke 和 astream）"""
+        return self._get_llm()
+
     # ============ LLM 驱动的意图分类 ============
 
     def _build_state_graph(self) -> StateGraphExecutor:
         graph = StateGraphExecutor()
         policy = NodeExecutionPolicy(timeout_seconds=30.0, retries=1, fallback=self._node_fallback)
-        graph.add_node("intent", self._graph_intent_node, policy)
-        graph.add_node("plan", self._graph_plan_node, policy)
-        graph.add_node("retrieve", self._graph_retrieve_node, policy)
-        graph.add_node("execute", self._graph_execute_node, policy)
-        graph.add_node("verify", self._graph_verify_node, policy)
-        graph.add_node("replan", self._graph_replan_node, policy)
-        graph.add_node("final", self._graph_final_node, policy)
+
+        # DAG dependency layout:
+        #   intent ──→ plan ──→ execute ──→ verify ──→ replan ──→ final
+        #              ↑
+        #   retrieve ──┘  (plan + retrieve run in parallel after intent)
+        graph.add_node("intent", self._graph_intent_node, policy, depends_on=set())
+        graph.add_node("plan", self._graph_plan_node, policy, depends_on={"intent"})
+        graph.add_node("retrieve", self._graph_retrieve_node, policy, depends_on={"intent"})
+        graph.add_node("execute", self._graph_execute_node, policy, depends_on={"plan"})
+        graph.add_node("verify", self._graph_verify_node, policy, depends_on={"execute", "retrieve"})
+        graph.add_node("replan", self._graph_replan_node, policy, depends_on={"verify"})
+        graph.add_node("final", self._graph_final_node, policy, depends_on={"replan"})
         return graph
 
     async def _node_fallback(self, state: AgentGraphState, error: Exception) -> AgentGraphState:
@@ -150,7 +168,17 @@ class SupervisorAgent:
             }
             return state
 
-        documents = await self._query_knowledge_base_async(state.query, state.context)
+        # Reuse prefetched RAG result from chat_service_v3 to avoid
+        # performing a duplicate retrieval.
+        prefetched = state.context.metadata.get("prefetched_rag_result")
+        if prefetched and prefetched.get("query") == state.query:
+            documents = prefetched.get("documents", [])
+            source = prefetched.get("source", "prefetch")
+            logger.info(f"[SupervisorAgent] 复用预取RAG结果 (source={source}), "
+                        f"documents={len(documents)}")
+        else:
+            documents = await self._query_knowledge_base_async(state.query, state.context)
+
         state.retrieval_result = {
             "success": True,
             "documents": documents,
@@ -292,9 +320,10 @@ class SupervisorAgent:
                 history=history_text
             )
 
-            # 调用 LLM
+            # 调用 LLM（通过限流器）
             llm = self._get_llm()
-            response = await llm.ainvoke(prompt)
+            async with _llm_rate_limiter:
+                response = await llm.ainvoke(prompt)
             content = response.content if hasattr(response, 'content') else str(response)
 
             # 解析 JSON 响应（增强容错）
@@ -709,13 +738,126 @@ class SupervisorAgent:
 
         try:
             llm = self._get_llm()
-            response = await llm.ainvoke(prompt)
+            async with _llm_rate_limiter:
+                response = await llm.ainvoke(prompt)
             content = response.content if hasattr(response, 'content') else str(response)
             logger.info(f"[SupervisorAgent] LLM润色RAG结果成功，长度: {len(content)}")
             return content
         except Exception as e:
             logger.error(f"[SupervisorAgent] LLM润色失败: {e}，使用备用回复")
             return f"好的，我帮您查了一下：\n\n{combined_text[:200]}..."
+
+    async def _format_rag_response_stream(
+        self, documents: List[Dict], query: str = ""
+    ) -> AsyncGenerator[str, None]:
+        """流式格式化 RAG 结果 - 逐 token 产出 LLM 输出。"""
+        if not documents:
+            yield "抱歉，知识库中没有找到相关信息呢～"
+            return
+
+        cleaned_contents = []
+        for doc in documents:
+            raw_content = doc.get("content", "")
+            sanitized = self._sanitize_content(raw_content)
+            cleaned_contents.append(sanitized)
+
+        combined_text = "\n---\n".join(cleaned_contents)
+        prompt = RAG_RESULT_REPHRASE_PROMPT.format(
+            query=query or "一般查询",
+            content=combined_text,
+        )
+
+        try:
+            llm = self._get_streaming_llm()
+            async with _llm_rate_limiter:
+                async for chunk in llm.astream(prompt):
+                    content = chunk.content if hasattr(chunk, "content") else str(chunk)
+                    if content:
+                        yield content
+        except Exception as e:
+            logger.error(f"[SupervisorAgent] 流式LLM润色失败: {e}，使用备用回复")
+            yield f"好的，我帮您查了一下：\n\n{combined_text[:200]}..."
+
+    async def process_stream(
+        self,
+        query: str,
+        context: SessionContext,
+        trace_id: Optional[str] = None,
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """流式处理用户查询，逐步 yield 中间事件和 token。
+
+        Yields:
+            {"type": "intent", "intent": ..., "confidence": ...}
+            {"type": "retrieved", "count": ...}
+            {"type": "token", "content": "..."}
+            {"type": "done"}
+        """
+        logger.info(f"[SupervisorAgent] 流式处理查询: {query[:50]}...")
+        if trace_id:
+            context.metadata["trace_id"] = trace_id
+
+        # ---- Step 1: Intent classification ----
+        intent, confidence = await self.classify_intent_llm(query, context.turn_history)
+        yield {"type": "intent", "intent": intent, "confidence": confidence}
+        logger.info(f"[SupervisorAgent] 流式意图: {intent} ({confidence:.2f})")
+
+        # ---- Step 2: Retrieve + respond ----
+        full_message = ""
+        if intent == "general":
+            # Reuse prefetched RAG results if available.
+            prefetched = context.metadata.get("prefetched_rag_result")
+            if prefetched and prefetched.get("query") == query:
+                documents = prefetched.get("documents", [])
+            else:
+                documents = await self._query_knowledge_base_async(query, context)
+
+            yield {"type": "retrieved", "count": len(documents)}
+
+            if documents:
+                async for token in self._format_rag_response_stream(documents, query):
+                    full_message += token
+                    yield {"type": "token", "content": token}
+            else:
+                fallback_msg = "抱歉，知识库中没有找到相关信息。"
+                full_message = fallback_msg
+                yield {"type": "token", "content": fallback_msg}
+        else:
+            # Non-general intents: run state graph (skills, etc.), then chunk result.
+            graph = self._build_state_graph()
+            graph_state = await graph.run(
+                AgentGraphState(query=query, context=context, trace_id=trace_id)
+            )
+            final_response = graph_state.final_response
+            if not final_response:
+                final_response = {
+                    "success": False,
+                    "message": "抱歉，处理失败。",
+                    "intent": intent,
+                    "confidence": confidence,
+                    "evaluation_score": 0.0,
+                }
+            full_message = final_response.get("message", "")
+            yield {"type": "token", "content": full_message}
+
+        # ---- Step 3: Record conversation ----
+        context.add_turn(
+            role="user",
+            content=query,
+            agent_name="supervisor",
+            intent=intent,
+            evaluation_score=0.0,
+            trace_id=trace_id,
+        )
+        context.add_turn(
+            role="assistant",
+            content=full_message,
+            agent_name="supervisor",
+            intent=intent,
+            evaluation_score=0.0,
+            trace_id=trace_id,
+        )
+
+        yield {"type": "done"}
 
     def _sanitize_content(self, content: str) -> str:
         """清理内容，防止注入攻击"""

@@ -19,7 +19,7 @@ import zipfile
 from typing import List, Dict, Any, Optional, Union, Tuple
 from datetime import datetime, timedelta, date
 from dataclasses import dataclass, field
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from html.parser import HTMLParser
 from xml.etree import ElementTree as ET
 
@@ -865,6 +865,58 @@ class CRAGDocumentInput(BaseModel):
     metadata: Optional[Dict[str, Any]] = Field(default=None, description="文档元数据")
 
 
+# ---------------------------------------------------------------------------
+# ProcessPoolExecutor workers for CPU-bound ML inference (embedding, rerank)
+# Each worker process loads its own copy of SentenceTransformer / CrossEncoder
+# so the main process is never blocked by the GIL during model inference.
+# ---------------------------------------------------------------------------
+
+_POOL_EMBED_MODEL = None
+_POOL_RERANK_MODEL = None
+
+
+def _init_ml_worker(embed_model_name: str, rerank_model_name: str):
+    """Initialize models once per worker process."""
+    import os
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    from sentence_transformers import SentenceTransformer, CrossEncoder
+    global _POOL_EMBED_MODEL, _POOL_RERANK_MODEL
+    try:
+        _POOL_EMBED_MODEL = SentenceTransformer(embed_model_name)
+    except Exception:
+        _POOL_EMBED_MODEL = None
+    try:
+        _POOL_RERANK_MODEL = CrossEncoder(rerank_model_name, max_length=512)
+    except Exception:
+        _POOL_RERANK_MODEL = None
+
+
+def _pool_embed_query(text: str):
+    """Compute query embedding in worker process."""
+    model = _POOL_EMBED_MODEL
+    if model is None:
+        return []
+    return model.encode([text], normalize_embeddings=False)[0].tolist()
+
+
+def _pool_embed_docs(texts):
+    """Compute document embeddings in worker process."""
+    model = _POOL_EMBED_MODEL
+    if model is None:
+        return [[] for _ in texts]
+    return model.encode(texts, normalize_embeddings=False).tolist()
+
+
+def _pool_rerank_scores(query: str, doc_texts):
+    """Compute CrossEncoder relevance scores in worker process."""
+    model = _POOL_RERANK_MODEL
+    if model is None:
+        return [0.0] * len(doc_texts)
+    pairs = [[query, t] for t in doc_texts]
+    scores = model.predict(pairs)
+    return scores.tolist()
+
+
 class RAGTool:
     """CRAG/Self-RAG工具类（使用 ChromaDB）"""
     name: str = "rag_retrieval"
@@ -937,10 +989,15 @@ class RAGTool:
                 settings=ChromaSettings(anonymized_telemetry=False)
             )
 
+            embedding_function = getattr(self.embeddings, "embed_documents", None)
+
             # 尝试获取现有集合，如果存在就保留
             existing_count = 0
             try:
-                self.collection = self.chroma_client.get_collection(self._collection_name)
+                self.collection = self.chroma_client.get_collection(
+                    self._collection_name,
+                    embedding_function=embedding_function,
+                )
                 existing_count = self.collection.count()
                 self._db_available = True
                 app_logger.info(f"ChromaDB 使用已有集合: {self._collection_name}, 文档数: {existing_count}")
@@ -949,6 +1006,7 @@ class RAGTool:
                 try:
                     self.collection = self.chroma_client.create_collection(
                         name=self._collection_name,
+                        embedding_function=embedding_function,
                         metadata={
                             "hnsw:space": "cosine",  # 使用余弦距离
                             "hnsw:construction_ef": 128,  # 构建时的搜索精度（越高越精确但越慢）
@@ -1021,6 +1079,22 @@ class RAGTool:
         self._retrieval_layer = None
 
         self.executor = ThreadPoolExecutor(max_workers=4)
+
+        # ProcessPoolExecutor for CPU-bound ML inference (embedding, rerank).
+        # Each worker loads its own model copy, so inference runs outside the GIL.
+        try:
+            self._process_pool = ProcessPoolExecutor(
+                max_workers=1,
+                initializer=_init_ml_worker,
+                initargs=(
+                    self.embeddings.model_name,
+                    "BAAI/bge-reranker-base",
+                ),
+            )
+            app_logger.info("ProcessPoolExecutor for ML inference initialized")
+        except Exception as e:
+            app_logger.warning(f"ProcessPoolExecutor init failed, falling back to in-process: {e}")
+            self._process_pool = None
 
         app_logger.info("CRAG/Self-RAG工具（ChromaDB版 + 三层架构）初始化完成")
 
@@ -2077,7 +2151,7 @@ class RAGTool:
         top_k: int,
         metadata_filter: Optional[Dict[str, Any]] = None,
     ) -> List[Document]:
-        """执行向量检索"""
+        """执行向量检索（embedding 可由 ProcessPoolExecutor 加速）"""
         # 确保集合存在
         try:
             self._ensure_collection_exists()
@@ -2095,11 +2169,23 @@ class RAGTool:
             if self.vector_backend is None:
                 return []
 
+            # 在独立进程中计算 embedding，避免 GIL 阻塞
+            query_embedding = None
+            if self._process_pool is not None:
+                try:
+                    query_embedding = self._process_pool.submit(
+                        _pool_embed_query, query
+                    ).result(timeout=30)
+                except Exception as e:
+                    app_logger.warning(f"ProcessPool embedding failed, using in-process: {e}")
+                    query_embedding = None
+
             documents = []
             backend_results = self.vector_backend.search(
                 VectorSearchRequest(
                     query=query,
                     top_k=top_k,
+                    query_embedding=query_embedding,
                     metadata_filter=metadata_filter,
                 )
             )
@@ -2573,17 +2659,44 @@ class RAGTool:
 
                         app_logger.info(f"[混合检索] 向量检索无结果，使用BM25结果: {len(formatted_docs)}条, 耗时: {time.time() - hybrid_start:.3f}s")
 
-            # Rerank重排序
+            # Rerank重排序（可在 ProcessPoolExecutor 中执行 CrossEncoder 打分）
             rerank_applied = False
             if use_rerank and formatted_docs and self.reranker:
                 rerank_start = time.time()
-                formatted_docs = self.reranker.rerank(
-                    contextualized_query,
-                    formatted_docs,
-                    top_k=actual_top_k
-                )
+
+                if self._process_pool is not None:
+                    # Offload CrossEncoder scoring to a dedicated process (GIL-free).
+                    doc_texts = [d.get("content", "") for d in formatted_docs]
+                    try:
+                        scores = self._process_pool.submit(
+                            _pool_rerank_scores,
+                            contextualized_query,
+                            doc_texts,
+                        ).result(timeout=60)
+
+                        scored_docs = list(zip(formatted_docs, scores))
+                        scored_docs.sort(key=lambda x: x[1], reverse=True)
+                        formatted_docs = [d for d, _ in scored_docs[:actual_top_k]]
+                        rerank_applied = True
+                    except Exception as e:
+                        app_logger.warning(
+                            f"ProcessPool rerank failed, falling back to in-process: {e}"
+                        )
+                        formatted_docs = self.reranker.rerank(
+                            contextualized_query,
+                            formatted_docs,
+                            top_k=actual_top_k,
+                        )
+                        rerank_applied = True
+                else:
+                    formatted_docs = self.reranker.rerank(
+                        contextualized_query,
+                        formatted_docs,
+                        top_k=actual_top_k,
+                    )
+                    rerank_applied = True
+
                 app_logger.info(f"Rerank耗时: {time.time() - rerank_start:.3f}s")
-                rerank_applied = True
 
             retrieval_time = time.time() - start_time
             result = {
@@ -2699,4 +2812,21 @@ class RAGTool:
         self.cache.clear()
 
 
-rag_tool = RAGTool()
+_rag_tool_singleton = None
+_rag_tool_singleton_lock = threading.Lock()
+
+
+def get_module_rag_tool() -> RAGTool:
+    """Return the process-wide RAGTool without constructing it at import time."""
+    global _rag_tool_singleton
+    if _rag_tool_singleton is None:
+        with _rag_tool_singleton_lock:
+            if _rag_tool_singleton is None:
+                _rag_tool_singleton = RAGTool()
+    return _rag_tool_singleton
+
+
+def __getattr__(name):
+    if name == "rag_tool":
+        return get_module_rag_tool()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

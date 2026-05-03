@@ -57,7 +57,7 @@ class AgentFactory:
         logger.info("[AgentFactory] 初始化完成")
 
     def _initialize_llm(self) -> None:
-        """初始化全局 LLM"""
+        """初始化全局 LLM（支持 streaming）"""
         try:
             # 延迟导入避免循环依赖
             sys.path.append(os.path.dirname(os.path.dirname(__file__)))
@@ -68,9 +68,9 @@ class AgentFactory:
                 base_url=settings.api.openai_base_url or settings.api.deepseek_base_url,
                 model="deepseek-chat",
                 temperature=0.1,
-                streaming=False
+                streaming=True,  # 启用 streaming，ainvoke() 仍返回完整结果，astream() 返回 token
             )
-            logger.info("[AgentFactory] LLM 初始化完成")
+            logger.info("[AgentFactory] LLM 初始化完成（streaming=True）")
         except Exception as e:
             logger.error(f"[AgentFactory] LLM 初始化失败: {e}")
             raise

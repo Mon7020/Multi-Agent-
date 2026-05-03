@@ -44,9 +44,9 @@ DISCOUNT_LEVELS = [
 class NegotiationSkill(BaseSkill):
     """价格谈判Skill"""
 
-    def __init__(self, config: Optional[SkillConfig] = None):
+    def __init__(self, config: Optional[SkillConfig] = None, data_loader: Optional[Any] = None):
         super().__init__(config)
-        self._data_loader = skills_data_loader
+        self._data_loader = data_loader or skills_data_loader
 
     def _get_product_discounts(self) -> Dict[str, Dict]:
         """获取产品折扣数据（懒加载）"""
@@ -77,7 +77,7 @@ class NegotiationSkill(BaseSkill):
             if any(k in h.get("content", "").lower() for k in negotiation_keywords)
         )
 
-        return any(keyword in query for keyword in negotiation_keywords) or negotiation_count >= 2
+        return any(keyword in query for keyword in negotiation_keywords) or negotiation_count >= 1
 
     def _extract_current_product(self, query: str, rag_results: list = None) -> Optional[Dict]:
         """
