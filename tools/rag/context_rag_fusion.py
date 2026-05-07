@@ -261,10 +261,45 @@ class RAGResultInjector:
         self.context_manager = context_manager
         self._quality_thresholds = {
             "high": 0.7,
-            "medium": 0.4,
-            "low": 0.2
+            "medium": 0.2,
+            "low": 0.05
         }
         logger.info("[RAGResultInjector] 初始化完成")
+
+    def _extract_quality_terms(self, text: str) -> List[str]:
+        """Extract stable product/query terms from Chinese and mixed text."""
+        if not text:
+            return []
+
+        lower = text.lower()
+        terms = []
+
+        known_terms = [
+            "投影仪", "投影机", "智能投影仪", "手机", "智能手机", "耳机",
+            "价格", "多少钱", "报价", "便宜", "优惠", "配置", "分辨率",
+            "屏幕", "续航", "x12", "x12pro"
+        ]
+        for term in known_terms:
+            if term in lower:
+                terms.append(term)
+
+        model_matches = re.findall(
+            r"[a-zA-Z]?\d+(?:\s*(?:pro|max|plus|air|mini|se|ultra))?",
+            lower,
+            re.IGNORECASE,
+        )
+        terms.extend(match.replace(" ", "") for match in model_matches if match.strip())
+
+        terms.extend(re.findall(r"\d+(?:gb|mah|元|k|p)?", lower, re.IGNORECASE))
+
+        seen = set()
+        deduped = []
+        for term in terms:
+            normalized = term.strip().lower()
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                deduped.append(normalized)
+        return deduped
 
     def evaluate_retrieval_quality(
         self,
@@ -284,8 +319,7 @@ class RAGResultInjector:
         if not documents:
             return RetrievalQuality.NONE, 0.0
 
-        query_lower = query.lower()
-        query_keywords = set(query_lower.replace("?", "").replace("！", "").split())
+        query_terms = self._extract_quality_terms(query)
 
         total_relevance = 0.0
         documents_with_keyword = 0
@@ -294,11 +328,10 @@ class RAGResultInjector:
             content = doc.get("content", "").lower()
             similarity_score = doc.get("similarity_score", 0.0)
 
-            doc_keywords = set(content.replace(",", " ").replace("。", " ").replace("\n", " ").split())
-            common = query_keywords & doc_keywords
+            matched_terms = [term for term in query_terms if term in content]
 
-            if len(query_keywords) > 0:
-                keyword_ratio = len(common) / len(query_keywords)
+            if query_terms:
+                keyword_ratio = len(matched_terms) / len(query_terms)
             else:
                 keyword_ratio = 0
 
@@ -694,8 +727,10 @@ class ContextRAGFusionLayer:
 
             context_strength = self._calculate_context_strength(session_context)
 
+            effective_intent = self._resolve_fusion_intent(query, llm_intent, intent)
+
             strategy, strategy_confidence = self.fusion_engine.select_strategy(
-                quality, context_strength, intent
+                quality, context_strength, effective_intent
             )
 
             fusion_ctx = self.fusion_engine.build_fusion_context(
@@ -728,6 +763,8 @@ class ContextRAGFusionLayer:
                     "entities": enhanced_query_obj.entities,
                     "injection_summary": injection_summary,
                     "context_strength": context_strength,
+                    "classified_intent": llm_intent,
+                    "effective_intent": effective_intent,
                     "retrieval_result": {
                         "success": rag_result.get("success", bool(documents)),
                         "documents": documents
@@ -744,6 +781,17 @@ class ContextRAGFusionLayer:
                        f"strategy={strategy.value}, time={total_time:.3f}s")
 
             return result
+
+    @staticmethod
+    def _resolve_fusion_intent(query: str, classified_intent: str, fallback_intent: str) -> str:
+        if classified_intent and classified_intent != "general":
+            return classified_intent
+        normalized = (query or "").strip().lower()
+        if normalized in {"你好", "您好", "hello", "hi", "hey"}:
+            return "greeting"
+        if normalized in {"再见", "拜拜", "bye", "goodbye"}:
+            return "farewell"
+        return classified_intent or fallback_intent
 
     def _extract_short_term(self, context: SessionContext) -> str:
         """Extract short-term context."""

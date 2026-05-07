@@ -455,9 +455,9 @@ class LongTermMemoryManager:
     - 跨会话恢复上下文
     - 用户画像管理
 
-    Manus 实现要点：
-    - 文件系统作为终极上下文
-    - 持久化存储
+    存储方案：
+    - Redis 主存储（SET/GET，原子写，跨进程安全）
+    - JSON 文件兜底（Redis 不可用时自动回退）
     """
 
     def __init__(self, storage_path: str = None):
@@ -473,7 +473,37 @@ class LongTermMemoryManager:
         self._lock = threading.RLock()
         self.user_profiles: Dict[str, UserProfile] = {}
 
+        # Redis 连接（主存储）
+        self._redis = None
+        self._redis_available = False
+        self._init_redis()
+
         logger.info(f"[LongTermMemory] 初始化完成: {storage_path}")
+
+    def _init_redis(self):
+        """初始化 Redis 连接"""
+        try:
+            from config.settings import settings
+            import redis
+            self._redis = redis.Redis(
+                host=settings.redis_host,
+                port=settings.redis_port,
+                db=settings.redis_db,
+                password=settings.redis_password,
+                decode_responses=True,
+                socket_connect_timeout=5,
+                socket_timeout=5
+            )
+            self._redis.ping()
+            self._redis_available = True
+            logger.info(f"[LongTermMemory] Redis 连接成功: {settings.redis_host}:{settings.redis_port}")
+        except Exception as e:
+            logger.warning(f"[LongTermMemory] Redis 连接失败，回退到文件存储: {e}")
+            self._redis_available = False
+
+    def _redis_key(self, user_id: str) -> str:
+        """Redis 键名"""
+        return f"memory:profile:{user_id}"
 
     def get_or_create_profile(self, user_id: str) -> UserProfile:
         """获取或创建用户画像"""
@@ -491,7 +521,18 @@ class LongTermMemoryManager:
         return os.path.join(self.storage_path, f"{user_id}_profile.json")
 
     def _load_profile(self, user_id: str) -> Optional[UserProfile]:
-        """从磁盘加载用户画像"""
+        """加载用户画像 — Redis 优先，文件兜底"""
+        # 1. Redis 加载
+        if self._redis_available:
+            try:
+                data_json = self._redis.get(self._redis_key(user_id))
+                if data_json:
+                    data = json.loads(data_json)
+                    return UserProfile(**data)
+            except Exception as e:
+                logger.warning(f"[LongTermMemory] Redis 加载失败 {user_id}: {e}")
+
+        # 2. 文件兜底（迁移/离线场景）
         try:
             path = self._get_profile_path(user_id)
             if os.path.exists(path):
@@ -505,12 +546,12 @@ class LongTermMemoryManager:
                         data["preference_conflicts"] = []
                     return UserProfile(**data)
         except Exception as e:
-            logger.warning(f"[LongTermMemory] 加载失败 {user_id}: {e}")
+            logger.warning(f"[LongTermMemory] 文件加载失败 {user_id}: {e}")
 
         return None
 
     def save_profile(self, user_id: str) -> bool:
-        """保存用户画像到磁盘"""
+        """保存用户画像 — Redis 主存储 + JSON 文件兜底"""
         with self._lock:
             if user_id not in self.user_profiles:
                 return False
@@ -519,25 +560,28 @@ class LongTermMemoryManager:
                 profile = self.user_profiles[user_id]
                 profile.last_updated = datetime.now().isoformat()
 
+                data = {
+                    "user_id": profile.user_id,
+                    "preferences": profile.preferences,
+                    "preference_meta": profile.preference_meta,
+                    "preference_history": profile.preference_history[-200:],
+                    "preference_conflicts": profile.preference_conflicts[-200:],
+                    "interaction_history": profile.interaction_history[-50:],
+                    "discussed_entities": profile.discussed_entities,
+                    "satisfaction_scores": profile.satisfaction_scores[-20:],
+                    "created_at": profile.created_at,
+                    "last_updated": profile.last_updated
+                }
+                json_str = json.dumps(data, ensure_ascii=False)
+
+                # 1. Redis 写入（主存储）
+                if self._redis_available:
+                    self._redis.set(self._redis_key(user_id), json_str)
+
+                # 2. JSON 文件写入（兜底 + 迁移兼容）
                 path = self._get_profile_path(user_id)
                 with open(path, 'w', encoding='utf-8') as f:
-                    json.dump(
-                        {
-                            "user_id": profile.user_id,
-                            "preferences": profile.preferences,
-                            "preference_meta": profile.preference_meta,
-                            "preference_history": profile.preference_history[-200:],
-                            "preference_conflicts": profile.preference_conflicts[-200:],
-                            "interaction_history": profile.interaction_history[-50:],
-                            "discussed_entities": profile.discussed_entities,
-                            "satisfaction_scores": profile.satisfaction_scores[-20:],
-                            "created_at": profile.created_at,
-                            "last_updated": profile.last_updated
-                        },
-                        f,
-                        ensure_ascii=False,
-                        indent=2
-                    )
+                    f.write(json_str)
 
                 logger.info(f"[LongTermMemory] 保存成功: {user_id}")
                 return True
@@ -545,6 +589,47 @@ class LongTermMemoryManager:
             except Exception as e:
                 logger.error(f"[LongTermMemory] 保存失败 {user_id}: {e}")
                 return False
+
+    def migrate_existing_to_redis(self, user_id: str = None) -> int:
+        """
+        将磁盘上的 JSON 文件批量迁移到 Redis
+
+        用于首次切换存储时的数据迁移，后续正常读写走 save_profile 自动同步。
+
+        Args:
+            user_id: 指定用户迁移；None 则迁移 storage_path 下所有 JSON
+
+        Returns:
+            迁移的用户数
+        """
+        if not self._redis_available:
+            logger.warning("[LongTermMemory] Redis 不可用，跳过迁移")
+            return 0
+
+        count = 0
+        try:
+            if user_id:
+                # 单个用户 — 通过正常读写路径自动完成
+                profile = self.get_or_create_profile(user_id)
+                if profile:
+                    self.save_profile(user_id)
+                    count = 1
+            else:
+                # 批量迁移所有 JSON 文件
+                for filename in os.listdir(self.storage_path):
+                    if filename.endswith("_profile.json"):
+                        uid = filename.replace("_profile.json", "")
+                        profile = self.get_or_create_profile(uid)
+                        if profile:
+                            self.save_profile(uid)
+                            count += 1
+
+            logger.info(f"[LongTermMemory] Redis 迁移完成，共 {count} 个用户")
+        except Exception as e:
+            logger.error(f"[LongTermMemory] Redis 迁移失败: {e}")
+
+        return count
+
     def update_preference(
         self,
         user_id: str,

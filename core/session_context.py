@@ -694,7 +694,6 @@ class SessionContext:
             self.intent_tracker = IntentEvolutionTracker()
             self._last_compressed_turn_id = -1
 
-            self._load_long_term_preferences()
             logger.info(f"[SessionContext] session cleared: {self.session_id}")
 
         if remove_persisted:

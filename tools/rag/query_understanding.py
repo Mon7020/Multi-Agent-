@@ -17,6 +17,7 @@ from tools.rag.intent_classifier import (
     IntentType,
     IntentClassificationResult,
     UnifiedIntentClassifier,
+    LLMIntentClassifier,
     IIntentClassifier,
     INTENT_DESCRIPTIONS
 )
@@ -48,6 +49,16 @@ class QueryUnderstandingResult:
             complexity=complexity,
             intent_reasoning=classification.reasoning
         )
+
+
+class SemanticIntentClassifier:
+    """Backward-compatible adapter for the previous semantic intent API."""
+
+    def __init__(self, llm=None):
+        self._classifier = LLMIntentClassifier(llm=llm)
+
+    def classify(self, query: str) -> Tuple[str, float, str]:
+        return self._classifier.classify(query).to_tuple()
 
 
 class QueryUnderstandingLayer:

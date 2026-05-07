@@ -1,5 +1,25 @@
 def test_disable_chroma_telemetry_patches_incompatible_posthog_capture(monkeypatch):
-    import chromadb.telemetry.product.posthog as chroma_posthog
+    import sys
+    import types
+
+    chromadb = types.ModuleType("chromadb")
+    telemetry = types.ModuleType("chromadb.telemetry")
+    product = types.ModuleType("chromadb.telemetry.product")
+    chroma_posthog = types.ModuleType("chromadb.telemetry.product.posthog")
+
+    class Posthog:
+        def _direct_capture(self, event):
+            del self, event
+            return None
+
+    chroma_posthog.Posthog = Posthog
+    chroma_posthog.posthog = types.SimpleNamespace(disabled=False)
+
+    monkeypatch.setitem(sys.modules, "chromadb", chromadb)
+    monkeypatch.setitem(sys.modules, "chromadb.telemetry", telemetry)
+    monkeypatch.setitem(sys.modules, "chromadb.telemetry.product", product)
+    monkeypatch.setitem(sys.modules, "chromadb.telemetry.product.posthog", chroma_posthog)
+
     from tools.rag.chroma_telemetry import disable_chroma_telemetry
 
     calls = []
