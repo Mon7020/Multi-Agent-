@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from app.api.v1 import auth, knowledge_base
 from app.services.auth_service import auth_service
 from app.services.knowledge_admin_service import knowledge_admin_service
+from app.services.task_queue_service import task_queue_service
 
 
 TEST_TMP_ROOT = Path(__file__).resolve().parents[2] / ".pytest_cache" / "knowledge-base-reload-api-tests"
@@ -85,7 +86,7 @@ class KnowledgeBaseReloadApiTest(unittest.TestCase):
         knowledge_admin_service.reconfigure()
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
-    def test_reload_rebuilds_all_supported_documents(self):
+    def test_reload_queues_async_task(self):
         (self.docs_dir / "alpha.txt").write_text("alpha", encoding="utf-8")
         (self.docs_dir / "guide.html").write_text("<h1>Guide</h1><p>Step</p>", encoding="utf-8")
         (self.docs_dir / "table.xlsx").write_bytes(b"xlsx")
@@ -93,11 +94,13 @@ class KnowledgeBaseReloadApiTest(unittest.TestCase):
 
         response = self.client.post("/api/v1/knowledge-base/reload", headers=self.headers)
 
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["verified_chunks"], 4)
-        self.assertEqual(response.json()["access_metadata_rebuilt"], True)
-        self.assertIn("access_policy_version", response.json())
-        self.assertEqual(sorted(self.rag_tool.loaded_sources), ["alpha.txt", "guide.html", "table.xlsx"])
+        self.assertEqual(response.status_code, 202)
+        payload = response.json()
+        self.assertTrue(payload["task_id"].startswith("task_"))
+        self.assertEqual(payload["status"], "queued")
+        self.assertEqual(payload["message"], "knowledge reload queued")
+        self.assertEqual(task_queue_service.get_task(payload["task_id"])["task_type"], "knowledge_reload")
+        self.assertEqual(self.rag_tool.loaded_sources, [])
 
 
 if __name__ == "__main__":

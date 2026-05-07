@@ -13,6 +13,7 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 from app.api.v1 import auth, chat, skills, health, knowledge_base, evaluation, metrics
+from app.api.admin import tasks as admin_tasks
 from app.config import settings
 
 # 初始化日志系统
@@ -67,6 +68,7 @@ app.include_router(health.router, prefix="/api/v1")
 app.include_router(knowledge_base.router, prefix="/api/v1")
 app.include_router(evaluation.router, prefix="/api/v1")
 app.include_router(metrics.router, prefix="/api/v1")
+app.include_router(admin_tasks.router, prefix="/api/admin")
 
 
 @app.get("/")

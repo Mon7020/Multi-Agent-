@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from app.admin_main import app
 from app.services.audit_log_service import AuditLogService
 from app.services.auth_service import auth_service
+from app.services.task_queue_service import task_queue_service
 
 
 TEST_TMP_ROOT = Path(__file__).resolve().parents[2] / ".pytest_cache" / "admin-access-tests"
@@ -43,6 +44,20 @@ class AdminAccessAuditTest(unittest.TestCase):
         response = self.client.get("/api/admin/dashboard/summary", headers=self.admin_headers)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["current_user"]["role"], "admin")
+
+    def test_admin_can_read_task_status(self):
+        task = task_queue_service.enqueue(
+            task_type="knowledge_reload",
+            payload={},
+            actor_id=self.admin["id"],
+            idempotency_key=f"test-admin-task-status:{uuid.uuid4().hex}",
+        )
+
+        response = self.client.get(f"/api/admin/tasks/{task['task_id']}", headers=self.admin_headers)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["task_id"], task["task_id"])
+        self.assertEqual(response.json()["status"], "queued")
 
     def test_audit_log_service_appends_entries(self):
         log_path = self.temp_dir / "audit-log.jsonl"

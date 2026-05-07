@@ -119,7 +119,7 @@ async def create_knowledge_document(
     user=Depends(require_admin_user("admin", "super_admin")),
 ):
     try:
-        return knowledge_admin_service.create_document(
+        created = knowledge_admin_service.create_document(
             filename=file.filename or "",
             content=await file.read(),
             actor_id=user["id"],
@@ -129,6 +129,12 @@ async def create_knowledge_document(
             visible_to_frontend=visible_to_frontend,
             allowed_roles=_parse_json_list(allowed_roles, "allowed_roles"),
         )
+        task = knowledge_admin_service.enqueue_document_index(
+            document_id=created["document_id"],
+            version_id=created.get("current_version_id"),
+            actor_id=user["id"],
+        )
+        return {**created, "index_task_id": task["task_id"], "index_status": task["status"]}
     except Exception as exc:
         _raise_knowledge_http_error(exc)
 
@@ -140,12 +146,18 @@ async def replace_knowledge_document(
     user=Depends(require_admin_user("admin", "super_admin")),
 ):
     try:
-        return knowledge_admin_service.replace_document(
+        replaced = knowledge_admin_service.replace_document(
             document_id,
             filename=file.filename or "",
             content=await file.read(),
             actor_id=user["id"],
         )
+        task = knowledge_admin_service.enqueue_document_index(
+            document_id=replaced["document_id"],
+            version_id=replaced.get("current_version_id"),
+            actor_id=user["id"],
+        )
+        return {**replaced, "index_task_id": task["task_id"], "index_status": task["status"]}
     except Exception as exc:
         _raise_knowledge_http_error(exc)
 

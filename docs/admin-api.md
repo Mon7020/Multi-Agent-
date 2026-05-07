@@ -591,3 +591,33 @@
 
 - `GET /api/admin/settings/summary` 现在返回 `runtime_params`、`frontend_policy`、`permission_model`
 - `POST /api/admin/settings/runtime` 对无效参数组合返回 `400`
+
+# 2026-05-07 Async Tasks Addendum
+
+Slow knowledge operations can now return an accepted task response:
+
+```json
+{
+  "success": true,
+  "task_id": "task_...",
+  "status": "queued",
+  "message": "knowledge reload queued"
+}
+```
+
+Operators can inspect queued work:
+
+- `GET /api/admin/tasks`
+- `GET /api/admin/tasks?status=queued`
+- `GET /api/admin/tasks/{task_id}`
+- `POST /api/admin/tasks/{task_id}/retry`
+
+Task statuses:
+
+- `queued`: waiting for a worker
+- `running`: claimed by a worker
+- `succeeded`: handler completed
+- `failed`: reserved for adapters that keep failed tasks retryable
+- `dead`: max attempts exhausted
+
+The first queued handlers cover knowledge document indexing and knowledge reload. Chat remains synchronous; user-facing answer generation is not queued.

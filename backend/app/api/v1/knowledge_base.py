@@ -13,7 +13,7 @@ from typing import List
 from urllib.parse import unquote
 import xml.etree.ElementTree as ET
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel
 
 from app.api.admin.dependencies import require_admin_user, require_authenticated_user
@@ -381,6 +381,8 @@ async def upload_document(
         file_path.unlink()
 
     file_path.write_bytes(content)
+    response_payload = None
+    index_task = None
 
     try:
         rag_tool = get_rag_tool()
@@ -400,7 +402,7 @@ async def upload_document(
         )
         doc_ids = rag_tool.add_documents_to_vector_db(documents)
 
-        return {
+        response_payload = {
             "success": True,
             "message": f"uploaded '{filename}'",
             "filename": filename,
@@ -415,13 +417,23 @@ async def upload_document(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     finally:
         if file_path.exists():
-            knowledge_admin_service.update_document_access(
+            record = knowledge_admin_service.update_document_access(
                 filename,
                 visible_to_frontend=False,
                 published=False,
                 allowed_roles=["user", "operator", "admin", "super_admin"],
                 actor_id=current_user["id"],
             )
+            index_task = knowledge_admin_service.enqueue_document_index(
+                document_id=record["document_id"],
+                version_id=record.get("current_version_id"),
+                actor_id=current_user["id"],
+            )
+
+    if response_payload is not None and index_task is not None:
+        response_payload["index_task_id"] = index_task["task_id"]
+        response_payload["index_status"] = index_task["status"]
+    return response_payload
 
 
 @router.get("/knowledge-base/params", response_model=RAGParamsResponse)
@@ -472,45 +484,15 @@ async def update_rag_params(
     }
 
 
-@router.post("/knowledge-base/reload")
+@router.post("/knowledge-base/reload", status_code=status.HTTP_202_ACCEPTED)
 async def reload_knowledge_base(current_user=Depends(require_admin_user("admin", "super_admin"))):
-    del current_user
     try:
-        rag_tool = get_rag_tool()
-        runtime_params = rag_params_manager.get_params()
-        chunk_size = runtime_params.get("chunk_size", 400)
-        chunk_overlap = runtime_params.get("chunk_overlap", 50)
-
-        if not rag_tool.clear_and_rebuild_collection():
-            raise RuntimeError("failed to rebuild vector collection")
-
-        docs_dir = get_docs_dir()
-        total_chunks = 0
-
-        for file_path in sorted([p for p in docs_dir.iterdir() if p.is_file()], key=lambda p: p.name.lower()):
-            if file_path.suffix.lower() not in _ALLOWED_DOC_EXTENSIONS:
-                continue
-
-            try:
-                documents = rag_tool.load_document(
-                    str(file_path),
-                    chunk_size=chunk_size,
-                    chunk_overlap=chunk_overlap,
-                )
-                doc_ids = rag_tool.add_documents_to_vector_db(documents)
-                total_chunks += len(doc_ids)
-            except Exception as exc:
-                print(f"[ERR] failed to reload {file_path.name}: {exc}")
-
-        verified_chunks = rag_tool.collection.count() if rag_tool.collection else total_chunks
+        task = knowledge_admin_service.enqueue_reload(actor_id=current_user["id"])
         return {
             "success": True,
-            "message": "knowledge base reloaded",
-            "total_chunks": total_chunks,
-            "verified_chunks": verified_chunks,
-            "access_metadata_rebuilt": True,
-            "access_policy_version": knowledge_admin_service.get_access_policy_version(),
-            "params_used": {"chunk_size": chunk_size, "chunk_overlap": chunk_overlap},
+            "task_id": task["task_id"],
+            "status": task["status"],
+            "message": "knowledge reload queued",
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

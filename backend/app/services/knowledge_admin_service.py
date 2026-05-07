@@ -11,6 +11,7 @@ from uuid import uuid4
 from config.settings import settings
 from app.services.audit_log_service import AuditLogService
 from app.services.rag_runtime import get_loaded_rag_tool, get_rag_tool, rag_params_manager
+from app.services.task_queue_service import task_queue_service
 from tools.rag.chroma_telemetry import disable_chroma_telemetry
 from tools.rag.vector_store_backend import build_vector_access_metadata
 
@@ -640,6 +641,95 @@ class KnowledgeAdminService:
         if not self.can_role_access(record, role):
             raise FileNotFoundError(document_id)
         return record
+
+    def enqueue_document_index(
+        self,
+        *,
+        document_id: str,
+        actor_id: str,
+        version_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        payload = {"document_id": document_id, "version_id": version_id}
+        idempotency_version = version_id or "current"
+        return task_queue_service.enqueue(
+            task_type="knowledge_index_document",
+            payload=payload,
+            actor_id=actor_id,
+            idempotency_key=f"knowledge_index_document:{document_id}:{idempotency_version}",
+        )
+
+    def enqueue_reload(self, *, actor_id: str) -> Dict[str, Any]:
+        return task_queue_service.enqueue(
+            task_type="knowledge_reload",
+            payload={},
+            actor_id=actor_id,
+            idempotency_key="knowledge_reload:latest",
+        )
+
+    def index_document(self, document_id: str) -> Dict[str, Any]:
+        registry = self._load_registry()
+        document_id, record = self._resolve_record(document_id, registry)
+        if record.get("deleted"):
+            raise ValueError("cannot index deleted document")
+
+        file_path = self._record_storage_path(record)
+        if not file_path.exists() or not file_path.is_file():
+            raise FileNotFoundError(document_id)
+
+        try:
+            self._delete_chunks(str(file_path.resolve()))
+        except Exception:
+            pass
+        chunk_count = self._index_file(file_path)
+        record["chunk_count"] = chunk_count
+        record["updated_at"] = self._now_iso()
+        registry["documents"][document_id] = record
+        self._save_registry(registry)
+        return {"document_id": document_id, "chunk_count": chunk_count}
+
+    def reload_all_documents(self) -> Dict[str, Any]:
+        rag_tool = get_rag_tool()
+        runtime_params = rag_params_manager.get_params()
+        chunk_size = runtime_params.get("chunk_size", 400)
+        chunk_overlap = runtime_params.get("chunk_overlap", 50)
+
+        if not rag_tool.clear_and_rebuild_collection():
+            raise RuntimeError("failed to rebuild vector collection")
+
+        registry = self._load_registry()
+        total_chunks = 0
+        indexed_documents = 0
+        for document_id, record in registry.get("documents", {}).items():
+            if record.get("deleted"):
+                continue
+            file_path = self._record_storage_path(record)
+            if not file_path.exists() or file_path.suffix.lower() not in ALLOWED_DOC_EXTENSIONS:
+                continue
+            documents = rag_tool.load_document(
+                str(file_path),
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+            )
+            doc_ids = rag_tool.add_documents_to_vector_db(documents)
+            chunk_count = len(doc_ids)
+            record["chunk_count"] = chunk_count
+            record["updated_at"] = self._now_iso()
+            registry["documents"][document_id] = record
+            total_chunks += chunk_count
+            indexed_documents += 1
+
+        self._save_registry(registry)
+        verified_chunks = rag_tool.collection.count() if rag_tool.collection else total_chunks
+        return {
+            "success": True,
+            "message": "knowledge base reloaded",
+            "document_count": indexed_documents,
+            "total_chunks": total_chunks,
+            "verified_chunks": verified_chunks,
+            "access_metadata_rebuilt": True,
+            "access_policy_version": self.get_access_policy_version(),
+            "params_used": {"chunk_size": chunk_size, "chunk_overlap": chunk_overlap},
+        }
 
     def list_document_versions(self, document_id: str) -> Dict[str, Any]:
         registry = self._load_registry()

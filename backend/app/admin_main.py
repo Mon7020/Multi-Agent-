@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.admin import dashboard, knowledge, memory, settings, users
+from app.api.admin import dashboard, knowledge, memory, settings, tasks, users
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from core.logger import LoggerManager
@@ -44,6 +44,7 @@ app.include_router(dashboard.router, prefix="/api/admin")
 app.include_router(users.router, prefix="/api/admin")
 app.include_router(knowledge.router, prefix="/api/admin")
 app.include_router(settings.router, prefix="/api/admin")
+app.include_router(tasks.router, prefix="/api/admin")
 
 
 @app.get("/")
