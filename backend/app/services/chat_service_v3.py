@@ -448,7 +448,7 @@ class ChatServiceV3:
                 result = self.rag_tool.retrieve(
                     query=query,
                     top_k=runtime_params.get("top_k", 5),
-                    enable_self_rag=True,
+                    enable_self_rag=runtime_params.get("enable_self_rag", False),
                     llm=self.llm,
                     use_cache=runtime_params.get("enable_cache", True),
                     use_hybrid=runtime_params.get("enable_hybrid", True),
@@ -506,7 +506,7 @@ class ChatServiceV3:
                 lambda: self.rag_tool.retrieve(
                     query=query,
                     top_k=runtime_params.get("top_k", 5),
-                    enable_self_rag=True,
+                    enable_self_rag=runtime_params.get("enable_self_rag", False),
                     llm=self.llm,
                     use_cache=runtime_params.get("enable_cache", True),
                     use_hybrid=runtime_params.get("enable_hybrid", True),

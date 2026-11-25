@@ -79,6 +79,7 @@ def test_knowledge_admin_filters_retrieved_documents_by_frontend_access_policy()
             {"content": "operator", "source_file": str(operator_doc.resolve())},
             {"content": "hidden", "source_file": str(hidden_doc.resolve())},
             {"content": "unknown", "source_file": str((docs_dir / "unknown.txt").resolve())},
+            {"content": "same-name-unregistered", "source_file": str((temp_dir / "other" / "public.txt").resolve())},
         ]
 
         filtered = knowledge_admin_service.filter_retrieved_documents_for_role(retrieved, role="user")

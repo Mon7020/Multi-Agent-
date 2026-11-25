@@ -112,7 +112,8 @@ tests/admin/**/__pycache__/
 tests/admin/**/*.py[cod]
 mianshi/
 evaluation/
-monitoring/
+!monitoring/
+!monitoring/*.py
 docs/superpowers/
 # ============================================
 # 9. IDE和编辑器文件

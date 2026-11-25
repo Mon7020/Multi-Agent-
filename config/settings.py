@@ -33,6 +33,7 @@ class RAGSettings(BaseSettings):
     # 文档分块配置
     chunk_size: int = Field(default=500, description="文档分块大小（字符数）")
     chunk_overlap: int = Field(default=50, description="分块重叠长度（保证上下文连续）")
+    rag_top_k: int = Field(default=10, description="RAG retrieval top-k")
     # Self-RAG决策阈值
     self_rag_retrieval_threshold: float = Field(default=0.7, description="检索置信度阈值")
     self_rag_reflection_threshold: float = Field(default=0.8, description="回答充分性阈值")
@@ -287,6 +288,10 @@ class Settings:
     @property
     def rag_embedding_model_name(self) -> str:
         return self.rag.embedding_model_name
+
+    @property
+    def rag_top_k(self) -> int:
+        return self.rag.rag_top_k
 
     @property
     def rag_chunk_size(self) -> int:

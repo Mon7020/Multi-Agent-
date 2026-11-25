@@ -2,6 +2,7 @@
 # 基于原项目 requirements.txt，避免版本冲突
 
 fastapi==0.115.0
+slowapi==0.1.9
 uvicorn==0.34.0
 python-multipart==0.0.12
 

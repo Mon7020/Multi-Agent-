@@ -1,4 +1,4 @@
-﻿"""Chat API routes backed by ChatServiceV3."""
+"""Chat API routes backed by ChatServiceV3."""
 
 import json
 import threading
@@ -22,22 +22,18 @@ class ConnectionManager:
 
     def __init__(self):
         self._lock = threading.Lock()
-        self.active_connections: dict[str, WebSocket] = {}
+        self.active_connections: dict[WebSocket, str] = {}
 
     async def connect(self, websocket: WebSocket, session_id: str):
-        await websocket.accept()
         with self._lock:
-            self.active_connections[session_id] = websocket
+            self.active_connections[websocket] = session_id
 
-    def disconnect(self, session_id: str):
+    def disconnect(self, websocket: WebSocket):
         with self._lock:
-            self.active_connections.pop(session_id, None)
+            self.active_connections.pop(websocket, None)
 
-    async def send_message(self, session_id: str, message: dict):
-        with self._lock:
-            websocket = self.active_connections.get(session_id)
-        if websocket is not None:
-            await websocket.send_json(message)
+    async def send_message(self, websocket: WebSocket, message: dict):
+        await websocket.send_json(message)
 
 
 manager = ConnectionManager()
@@ -238,7 +234,9 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
         await websocket.close(code=4000, reason="session_id invalid")
         return
 
-    await manager.connect(websocket, session_id)
+    # Message-token clients authenticate in their first message, so accept the
+    # transport now but register it only after identity and ownership checks.
+    await websocket.accept()
 
     try:
         greeting_message = (
@@ -247,7 +245,7 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
             else "Hello, how can I help you?"
         )
         await manager.send_message(
-            session_id,
+            websocket,
             {"type": "greeting", "content": greeting_message, "is_greeting": True},
         )
 
@@ -262,7 +260,7 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
             try:
                 message_data = json.loads(data)
             except json.JSONDecodeError:
-                await manager.send_message(session_id, {"type": "error", "content": "invalid JSON"})
+                await manager.send_message(websocket, {"type": "error", "content": "invalid JSON"})
                 continue
 
             message = (message_data.get("message") or "").strip()
@@ -277,19 +275,30 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                     requested_user_id=message_user_id,
                 )
             except HTTPException as exc:
-                await manager.send_message(session_id, {"type": "error", "content": str(exc.detail)})
+                await manager.send_message(websocket, {"type": "error", "content": str(exc.detail)})
                 continue
 
             if connection_user_id and resolved_user_id != connection_user_id:
-                await manager.send_message(session_id, {"type": "error", "content": "user_id mismatch"})
+                await manager.send_message(websocket, {"type": "error", "content": "user_id mismatch"})
                 continue
+            try:
+                # Look up by session ID, not by user ID: the session manager's
+                # user lookup may return a different session for that user.
+                existing_session = chat_service.session_manager.get_session(session_id)
+                if existing_session is not None and existing_session.user_id != resolved_user_id:
+                    raise PermissionError("session access denied for current user")
+            except PermissionError as exc:
+                await manager.send_message(websocket, {"type": "error", "content": str(exc)})
+                continue
+            if connection_user_id is None:
+                await manager.connect(websocket, session_id)
             connection_user_id = resolved_user_id
 
             if not message or len(message) > _MAX_MESSAGE_LEN:
-                await manager.send_message(session_id, {"type": "error", "content": "message invalid"})
+                await manager.send_message(websocket, {"type": "error", "content": "message invalid"})
                 continue
 
-            await manager.send_message(session_id, {"type": "status", "content": "thinking..."})
+            await manager.send_message(websocket, {"type": "status", "content": "thinking..."})
 
             try:
                 async for chunk in _iter_stream_chunks(
@@ -299,7 +308,7 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                     history=history,
                 ):
                     await manager.send_message(
-                        session_id,
+                        websocket,
                         {
                             "type": "chunk",
                             "content": chunk.get("content", ""),
@@ -307,13 +316,13 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                             "meta": chunk.get("meta"),
                         },
                     )
-                await manager.send_message(session_id, {"type": "done", "content": ""})
+                await manager.send_message(websocket, {"type": "done", "content": ""})
             except PermissionError as exc:
-                await manager.send_message(session_id, {"type": "error", "content": str(exc)})
+                await manager.send_message(websocket, {"type": "error", "content": str(exc)})
             except Exception as exc:
-                await manager.send_message(session_id, {"type": "error", "content": f"process failed: {str(exc)}"})
+                await manager.send_message(websocket, {"type": "error", "content": f"process failed: {str(exc)}"})
 
     except Exception as exc:
-        await manager.send_message(session_id, {"type": "error", "content": f"process failed: {str(exc)}"})
+        await manager.send_message(websocket, {"type": "error", "content": f"process failed: {str(exc)}"})
     finally:
-        manager.disconnect(session_id)
+        manager.disconnect(websocket)

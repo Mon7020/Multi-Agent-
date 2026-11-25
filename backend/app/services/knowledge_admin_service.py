@@ -567,13 +567,14 @@ class KnowledgeAdminService:
 
         registry = self._load_registry()
         records_by_source = {}
+        records_by_filename = {}
         for record in registry.get("documents", {}).values():
             storage_path = self._normalize_source_path(record.get("storage_path"))
             if storage_path:
                 records_by_source[storage_path] = record
             filename = Path(record.get("storage_name") or record.get("filename") or "").name
             if filename:
-                records_by_source[filename] = record
+                records_by_filename.setdefault(filename, []).append(record)
 
         filtered: List[Dict[str, Any]] = []
         for document in documents:
@@ -584,7 +585,13 @@ class KnowledgeAdminService:
             )
             source_key = self._normalize_source_path(source)
             filename_key = Path(str(source or "")).name
-            record = records_by_source.get(source_key) or records_by_source.get(filename_key)
+            record = records_by_source.get(source_key)
+            # A bare filename can be used by older indexes, but an absolute or
+            # relative path must never inherit another file's permissions.
+            if record is None and source and str(source) == filename_key:
+                matches = records_by_filename.get(filename_key, [])
+                if len(matches) == 1:
+                    record = matches[0]
             if not record or not self.can_role_access(record, role):
                 continue
 
