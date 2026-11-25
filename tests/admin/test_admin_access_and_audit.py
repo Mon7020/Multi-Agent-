@@ -3,13 +3,15 @@ import shutil
 import unittest
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
+import fakeredis
 from fastapi.testclient import TestClient
 
 from app.admin_main import app
 from app.services.audit_log_service import AuditLogService
 from app.services.auth_service import auth_service
-from app.services.task_queue_service import task_queue_service
+from app.services.task_queue_service import TaskQueueService
 
 
 TEST_TMP_ROOT = Path(__file__).resolve().parents[2] / ".pytest_cache" / "admin-access-tests"
@@ -22,6 +24,12 @@ class AdminAccessAuditTest(unittest.TestCase):
         self.temp_dir.mkdir(parents=True, exist_ok=True)
         db_path = self.temp_dir / "auth.sqlite3"
         auth_service.reconfigure(database_url=f"sqlite:///{db_path.as_posix()}")
+        self.task_queue = TaskQueueService(
+            redis_connection=fakeredis.FakeRedis(),
+            queue_name=f"admin-access-{uuid.uuid4().hex}",
+        )
+        self.task_api_patcher = patch("app.api.admin.tasks.task_queue_service", self.task_queue)
+        self.task_api_patcher.start()
         self.client = TestClient(app)
         self.user = auth_service.register("plain.user", "password123")
         self.admin = auth_service.register("admin.user", "password123")
@@ -34,6 +42,7 @@ class AdminAccessAuditTest(unittest.TestCase):
         }
 
     def tearDown(self):
+        self.task_api_patcher.stop()
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_plain_user_cannot_open_admin_dashboard(self):
@@ -46,7 +55,7 @@ class AdminAccessAuditTest(unittest.TestCase):
         self.assertEqual(response.json()["current_user"]["role"], "admin")
 
     def test_admin_can_read_task_status(self):
-        task = task_queue_service.enqueue(
+        task = self.task_queue.enqueue(
             task_type="knowledge_reload",
             payload={},
             actor_id=self.admin["id"],
@@ -76,6 +85,17 @@ class AdminAccessAuditTest(unittest.TestCase):
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["module"], "dashboard")
         self.assertEqual(entries[0]["result"], "success")
+
+    def test_retry_returns_conflict_when_another_reload_is_active(self):
+        request = dict(task_type="knowledge_reload", payload={}, idempotency_key="knowledge_reload:latest", max_attempts=1)
+        failed = self.task_queue.enqueue(**request)
+        self.task_queue.claim_next()
+        self.task_queue.fail(failed["task_id"], "unavailable")
+        active = self.task_queue.enqueue(**request)
+        response = self.client.post(f"/api/admin/tasks/{failed['task_id']}/retry", headers=self.admin_headers)
+        self.assertEqual(response.status_code, 409)
+        self.assertIn(active["task_id"], response.json()["detail"])
+        self.assertEqual(self.task_queue.rq_queue.job_ids, [active["task_id"]])
 
 
 if __name__ == "__main__":

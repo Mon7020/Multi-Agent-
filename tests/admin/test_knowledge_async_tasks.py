@@ -1,9 +1,15 @@
+import fakeredis
+
 from app.services.task_queue_service import TaskQueueService
 from app.services.task_worker import TaskWorker
 
 
+def make_queue() -> TaskQueueService:
+    return TaskQueueService(redis_connection=fakeredis.FakeRedis(), queue_name="test-tasks")
+
+
 def test_worker_dispatches_claimed_task_to_handler():
-    queue = TaskQueueService(storage_path=":memory:")
+    queue = make_queue()
     seen = []
 
     def handler(payload):
@@ -27,7 +33,7 @@ def test_worker_dispatches_claimed_task_to_handler():
 def test_enqueue_document_index_returns_task(monkeypatch):
     from app.services import knowledge_admin_service as module
 
-    queue = TaskQueueService(storage_path=":memory:")
+    queue = make_queue()
     monkeypatch.setattr(module, "task_queue_service", queue, raising=False)
 
     task = module.knowledge_admin_service.enqueue_document_index(
@@ -44,7 +50,7 @@ def test_enqueue_document_index_returns_task(monkeypatch):
 def test_enqueue_reload_returns_task(monkeypatch):
     from app.services import knowledge_admin_service as module
 
-    queue = TaskQueueService(storage_path=":memory:")
+    queue = make_queue()
     monkeypatch.setattr(module, "task_queue_service", queue, raising=False)
 
     task = module.knowledge_admin_service.enqueue_reload(actor_id="admin_1")
@@ -57,7 +63,7 @@ def test_enqueue_reload_returns_task(monkeypatch):
 def test_async_reload_response_shape(monkeypatch):
     from app.services import knowledge_admin_service as module
 
-    queue = TaskQueueService(storage_path=":memory:")
+    queue = make_queue()
     monkeypatch.setattr(module, "task_queue_service", queue, raising=False)
 
     task = module.knowledge_admin_service.enqueue_reload(actor_id="admin_1")

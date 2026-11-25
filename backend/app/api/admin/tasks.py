@@ -5,7 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.api.admin.dependencies import require_admin_user
-from app.services.task_queue_service import task_queue_service
+from app.services.task_queue_service import ActiveTaskConflict, task_queue_service
 
 router = APIRouter(prefix="/tasks", tags=["admin-tasks"])
 
@@ -39,4 +39,7 @@ async def retry_task(
     del user
     if not task_queue_service.get_task(task_id):
         raise HTTPException(status_code=404, detail="task not found")
-    return task_queue_service.retry(task_id)
+    try:
+        return task_queue_service.retry(task_id)
+    except ActiveTaskConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc

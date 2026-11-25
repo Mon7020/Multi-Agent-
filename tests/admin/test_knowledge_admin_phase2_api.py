@@ -4,11 +4,13 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
+import fakeredis
 from fastapi.testclient import TestClient
 
 from app.admin_main import app as admin_app
 from app.services.auth_service import auth_service
 from app.services.knowledge_admin_service import knowledge_admin_service
+from app.services.task_queue_service import TaskQueueService
 
 
 TEST_TMP_ROOT = Path(__file__).resolve().parents[2] / ".pytest_cache" / "knowledge-admin-phase2-api-tests"
@@ -71,6 +73,15 @@ class KnowledgeAdminPhase2ApiTest(unittest.TestCase):
             metadata_path=str(self.metadata_path),
             audit_storage_path=str(self.audit_path),
         )
+        self.task_queue = TaskQueueService(
+            redis_connection=fakeredis.FakeRedis(),
+            queue_name=f"knowledge-phase2-{uuid.uuid4().hex}",
+        )
+        self.task_queue_patcher = patch(
+            "app.services.knowledge_admin_service.task_queue_service",
+            self.task_queue,
+        )
+        self.task_queue_patcher.start()
 
         self.client = TestClient(admin_app)
         self.admin = auth_service.register("knowledge.phase2.admin", "password123")
@@ -93,6 +104,7 @@ class KnowledgeAdminPhase2ApiTest(unittest.TestCase):
         self.get_loaded_rag_tool_patcher.start()
 
     def tearDown(self):
+        self.task_queue_patcher.stop()
         self.get_rag_tool_patcher.stop()
         self.get_loaded_rag_tool_patcher.stop()
         knowledge_admin_service.reconfigure()

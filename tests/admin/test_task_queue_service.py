@@ -1,8 +1,22 @@
-from app.services.task_queue_service import TaskQueueService
+import fakeredis
+import pytest
+
+from app.services.task_queue_service import ActiveTaskConflict, TaskQueueService
+
+
+def make_queue() -> TaskQueueService:
+    return TaskQueueService(redis_connection=fakeredis.FakeRedis(), queue_name="test-tasks")
+
+
+def test_empty_queue_can_later_claim_work():
+    queue = make_queue()
+    assert queue.claim_next() is None
+    task = queue.enqueue(task_type="knowledge_reload", payload={})
+    assert queue.claim_next()["task_id"] == task["task_id"]
 
 
 def test_enqueue_creates_queued_task():
-    queue = TaskQueueService(storage_path=":memory:")
+    queue = make_queue()
 
     task = queue.enqueue(
         task_type="knowledge_index_document",
@@ -17,10 +31,11 @@ def test_enqueue_creates_queued_task():
     assert task["attempts"] == 0
     assert task["max_attempts"] == 3
     assert task["actor_id"] == "admin_1"
+    assert queue.rq_queue.count == 1
 
 
 def test_enqueue_with_same_idempotency_key_returns_existing_task():
-    queue = TaskQueueService(storage_path=":memory:")
+    queue = make_queue()
 
     first = queue.enqueue(
         task_type="knowledge_index_document",
@@ -40,7 +55,7 @@ def test_enqueue_with_same_idempotency_key_returns_existing_task():
 
 
 def test_claim_next_marks_task_running():
-    queue = TaskQueueService(storage_path=":memory:")
+    queue = make_queue()
     created = queue.enqueue(task_type="knowledge_reload", payload={}, actor_id="admin_1")
 
     claimed = queue.claim_next()
@@ -52,7 +67,7 @@ def test_claim_next_marks_task_running():
 
 
 def test_complete_marks_task_succeeded():
-    queue = TaskQueueService(storage_path=":memory:")
+    queue = make_queue()
     created = queue.enqueue(task_type="knowledge_reload", payload={}, actor_id="admin_1")
     queue.claim_next()
 
@@ -65,7 +80,7 @@ def test_complete_marks_task_succeeded():
 
 
 def test_fail_requeues_until_max_attempts_then_dead():
-    queue = TaskQueueService(storage_path=":memory:")
+    queue = make_queue()
     created = queue.enqueue(
         task_type="knowledge_reload",
         payload={},
@@ -86,7 +101,7 @@ def test_fail_requeues_until_max_attempts_then_dead():
 
 
 def test_task_service_can_filter_by_status():
-    queue = TaskQueueService(storage_path=":memory:")
+    queue = make_queue()
     queue.enqueue(task_type="knowledge_reload", payload={}, actor_id="admin_1")
     running = queue.enqueue(task_type="knowledge_reload", payload={}, actor_id="admin_1")
     queue.claim_next()
@@ -100,7 +115,7 @@ def test_task_service_can_filter_by_status():
 
 
 def test_retry_moves_dead_task_back_to_queue():
-    queue = TaskQueueService(storage_path=":memory:")
+    queue = make_queue()
     created = queue.enqueue(task_type="knowledge_reload", payload={}, max_attempts=1)
     queue.claim_next()
     queue.fail(created["task_id"], "permanent")
@@ -109,3 +124,52 @@ def test_retry_moves_dead_task_back_to_queue():
 
     assert retried["status"] == "queued"
     assert retried["error"] is None
+
+
+def test_reload_deduplicates_while_running_and_can_be_submitted_again():
+    queue = make_queue()
+    request = dict(task_type="knowledge_reload", payload={}, idempotency_key="knowledge_reload:latest")
+    first = queue.enqueue(**request)
+    queue.claim_next()
+    assert queue.enqueue(**request)["task_id"] == first["task_id"]
+    queue.complete(first["task_id"])
+    second = queue.enqueue(**request)
+    assert second["task_id"] != first["task_id"]
+    assert queue.rq_queue.job_ids == [second["task_id"]]
+    assert queue.get_task(first["task_id"])["status"] == "succeeded"
+
+
+def test_retry_cannot_duplicate_a_newer_active_task():
+    queue = make_queue()
+    request = dict(task_type="knowledge_reload", payload={}, idempotency_key="knowledge_reload:latest", max_attempts=1)
+    first = queue.enqueue(**request)
+    queue.claim_next()
+    queue.fail(first["task_id"], "unavailable")
+    second = queue.enqueue(**request)
+    with pytest.raises(ActiveTaskConflict, match=second["task_id"]):
+        queue.retry(first["task_id"])
+    assert queue.rq_queue.job_ids == [second["task_id"]]
+    queue.claim_next()
+    queue.complete(second["task_id"])
+    queue.retry(first["task_id"])
+    assert queue.enqueue(**request)["task_id"] == first["task_id"]
+    assert queue.rq_queue.job_ids == [first["task_id"]]
+
+
+def test_enqueue_failure_before_exec_leaves_no_partial_task(monkeypatch):
+    queue = make_queue()
+    enqueue_call = queue.rq_queue.enqueue_call
+
+    def interrupted(**kwargs):
+        enqueue_call(**kwargs)
+        raise RuntimeError("producer interrupted")
+
+    monkeypatch.setattr(queue.rq_queue, "enqueue_call", interrupted)
+    request = dict(task_type="knowledge_reload", payload={}, idempotency_key="knowledge_reload:latest")
+    with pytest.raises(RuntimeError, match="interrupted"):
+        queue.enqueue(**request)
+    assert queue.rq_queue.count == 0
+    assert queue.list_tasks() == []
+    monkeypatch.setattr(queue.rq_queue, "enqueue_call", enqueue_call)
+    recovered = queue.enqueue(**request)
+    assert queue.rq_queue.job_ids == [recovered["task_id"]]

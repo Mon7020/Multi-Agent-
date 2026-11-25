@@ -17,6 +17,8 @@ fastapi==0.115.0
 slowapi==0.1.9
 uvicorn==0.34.0
 redis==5.2.1
+rq==2.1.0
+fakeredis==2.26.2
 loguru==0.7.3
 uuid-utils==0.10.0
 pytest==8.3.5

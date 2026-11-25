@@ -4,13 +4,14 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
+import fakeredis
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.v1 import auth, knowledge_base
 from app.services.auth_service import auth_service
 from app.services.knowledge_admin_service import knowledge_admin_service
-from app.services.task_queue_service import task_queue_service
+from app.services.task_queue_service import TaskQueueService
 
 
 TEST_TMP_ROOT = Path(__file__).resolve().parents[2] / ".pytest_cache" / "knowledge-base-reload-api-tests"
@@ -70,6 +71,15 @@ class KnowledgeBaseReloadApiTest(unittest.TestCase):
             metadata_path=str(self.metadata_path),
             audit_storage_path=str(self.audit_path),
         )
+        self.task_queue = TaskQueueService(
+            redis_connection=fakeredis.FakeRedis(),
+            queue_name=f"knowledge-reload-{uuid.uuid4().hex}",
+        )
+        self.task_queue_patcher = patch(
+            "app.services.knowledge_admin_service.task_queue_service",
+            self.task_queue,
+        )
+        self.task_queue_patcher.start()
 
         self.client = TestClient(user_app)
         self.admin = auth_service.register("knowledge.reload.admin", "password123")
@@ -82,6 +92,7 @@ class KnowledgeBaseReloadApiTest(unittest.TestCase):
         self.get_rag_tool_patcher.start()
 
     def tearDown(self):
+        self.task_queue_patcher.stop()
         self.get_rag_tool_patcher.stop()
         knowledge_admin_service.reconfigure()
         shutil.rmtree(self.temp_dir, ignore_errors=True)
@@ -99,7 +110,7 @@ class KnowledgeBaseReloadApiTest(unittest.TestCase):
         self.assertTrue(payload["task_id"].startswith("task_"))
         self.assertEqual(payload["status"], "queued")
         self.assertEqual(payload["message"], "knowledge reload queued")
-        self.assertEqual(task_queue_service.get_task(payload["task_id"])["task_type"], "knowledge_reload")
+        self.assertEqual(self.task_queue.get_task(payload["task_id"])["task_type"], "knowledge_reload")
         self.assertEqual(self.rag_tool.loaded_sources, [])
 
 
