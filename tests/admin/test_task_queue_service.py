@@ -69,9 +69,9 @@ def test_claim_next_marks_task_running():
 def test_complete_marks_task_succeeded():
     queue = make_queue()
     created = queue.enqueue(task_type="knowledge_reload", payload={}, actor_id="admin_1")
-    queue.claim_next()
+    claimed = queue.claim_next()
 
-    completed = queue.complete(created["task_id"], result={"chunks": 10})
+    completed = queue.complete(created["task_id"], result={"chunks": 10}, lease_token=claimed["lease_token"])
 
     assert completed["status"] == "succeeded"
     assert completed["result"] == {"chunks": 10}
@@ -88,13 +88,13 @@ def test_fail_requeues_until_max_attempts_then_dead():
         max_attempts=2,
     )
 
-    queue.claim_next()
-    failed_once = queue.fail(created["task_id"], "temporary")
+    claimed = queue.claim_next()
+    failed_once = queue.fail(created["task_id"], "temporary", lease_token=claimed["lease_token"])
     assert failed_once["status"] == "queued"
     assert failed_once["error"] == "temporary"
 
-    queue.claim_next()
-    failed_twice = queue.fail(created["task_id"], "permanent")
+    claimed = queue.claim_next()
+    failed_twice = queue.fail(created["task_id"], "permanent", lease_token=claimed["lease_token"])
     assert failed_twice["status"] == "dead"
     assert failed_twice["attempts"] == 2
     assert failed_twice["error"] == "permanent"
@@ -117,8 +117,8 @@ def test_task_service_can_filter_by_status():
 def test_retry_moves_dead_task_back_to_queue():
     queue = make_queue()
     created = queue.enqueue(task_type="knowledge_reload", payload={}, max_attempts=1)
-    queue.claim_next()
-    queue.fail(created["task_id"], "permanent")
+    claimed = queue.claim_next()
+    queue.fail(created["task_id"], "permanent", lease_token=claimed["lease_token"])
 
     retried = queue.retry(created["task_id"])
 
@@ -130,9 +130,9 @@ def test_reload_deduplicates_while_running_and_can_be_submitted_again():
     queue = make_queue()
     request = dict(task_type="knowledge_reload", payload={}, idempotency_key="knowledge_reload:latest")
     first = queue.enqueue(**request)
-    queue.claim_next()
+    claimed = queue.claim_next()
     assert queue.enqueue(**request)["task_id"] == first["task_id"]
-    queue.complete(first["task_id"])
+    queue.complete(first["task_id"], lease_token=claimed["lease_token"])
     second = queue.enqueue(**request)
     assert second["task_id"] != first["task_id"]
     assert queue.rq_queue.job_ids == [second["task_id"]]
@@ -143,14 +143,14 @@ def test_retry_cannot_duplicate_a_newer_active_task():
     queue = make_queue()
     request = dict(task_type="knowledge_reload", payload={}, idempotency_key="knowledge_reload:latest", max_attempts=1)
     first = queue.enqueue(**request)
-    queue.claim_next()
-    queue.fail(first["task_id"], "unavailable")
+    claimed = queue.claim_next()
+    queue.fail(first["task_id"], "unavailable", lease_token=claimed["lease_token"])
     second = queue.enqueue(**request)
     with pytest.raises(ActiveTaskConflict, match=second["task_id"]):
         queue.retry(first["task_id"])
     assert queue.rq_queue.job_ids == [second["task_id"]]
-    queue.claim_next()
-    queue.complete(second["task_id"])
+    claimed = queue.claim_next()
+    queue.complete(second["task_id"], lease_token=claimed["lease_token"])
     queue.retry(first["task_id"])
     assert queue.enqueue(**request)["task_id"] == first["task_id"]
     assert queue.rq_queue.job_ids == [first["task_id"]]

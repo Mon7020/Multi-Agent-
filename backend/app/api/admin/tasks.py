@@ -10,13 +10,17 @@ from app.services.task_queue_service import ActiveTaskConflict, task_queue_servi
 router = APIRouter(prefix="/tasks", tags=["admin-tasks"])
 
 
+def _public_task(task):
+    return {key: value for key, value in task.items() if key != "lease_token"}
+
+
 @router.get("")
 async def list_tasks(
     status: Optional[str] = Query(default=None),
     user=Depends(require_admin_user("operator", "admin", "super_admin")),
 ):
     del user
-    return {"tasks": task_queue_service.list_tasks(status=status or None)}
+    return {"tasks": [_public_task(task) for task in task_queue_service.list_tasks(status=status or None)]}
 
 
 @router.get("/{task_id}")
@@ -28,7 +32,7 @@ async def get_task(
     task = task_queue_service.get_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="task not found")
-    return task
+    return _public_task(task)
 
 
 @router.post("/{task_id}/retry")
@@ -40,6 +44,6 @@ async def retry_task(
     if not task_queue_service.get_task(task_id):
         raise HTTPException(status_code=404, detail="task not found")
     try:
-        return task_queue_service.retry(task_id)
+        return _public_task(task_queue_service.retry(task_id))
     except ActiveTaskConflict as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

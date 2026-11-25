@@ -67,6 +67,10 @@ class AdminAccessAuditTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["task_id"], task["task_id"])
         self.assertEqual(response.json()["status"], "queued")
+        self.task_queue.claim_next()
+        running = self.client.get(f"/api/admin/tasks/{task['task_id']}", headers=self.admin_headers)
+        self.assertEqual(running.json()["status"], "running")
+        self.assertNotIn("lease_token", running.json())
 
     def test_audit_log_service_appends_entries(self):
         log_path = self.temp_dir / "audit-log.jsonl"
@@ -89,8 +93,8 @@ class AdminAccessAuditTest(unittest.TestCase):
     def test_retry_returns_conflict_when_another_reload_is_active(self):
         request = dict(task_type="knowledge_reload", payload={}, idempotency_key="knowledge_reload:latest", max_attempts=1)
         failed = self.task_queue.enqueue(**request)
-        self.task_queue.claim_next()
-        self.task_queue.fail(failed["task_id"], "unavailable")
+        claimed = self.task_queue.claim_next()
+        self.task_queue.fail(failed["task_id"], "unavailable", lease_token=claimed["lease_token"])
         active = self.task_queue.enqueue(**request)
         response = self.client.post(f"/api/admin/tasks/{failed['task_id']}/retry", headers=self.admin_headers)
         self.assertEqual(response.status_code, 409)
